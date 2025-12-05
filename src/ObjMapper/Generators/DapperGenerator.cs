@@ -25,11 +25,12 @@ public class DapperGenerator : ICodeGenerator
     public Dictionary<string, string> GenerateEntities(DatabaseSchema schema)
     {
         var entities = new Dictionary<string, string>();
+        var filteredTables = FilterDuplicateTables(schema.Tables);
 
-        foreach (var table in schema.Tables)
+        foreach (var table in filteredTables)
         {
             var entityName = NamingHelper.ToEntityName(table.Name);
-            var code = GenerateEntityClass(table);
+            var code = GenerateEntityClass(table, entityName);
             entities[$"{entityName}.cs"] = code;
         }
 
@@ -40,11 +41,12 @@ public class DapperGenerator : ICodeGenerator
     {
         // For Dapper, we generate repository classes instead of EF configurations
         var repositories = new Dictionary<string, string>();
+        var filteredTables = FilterDuplicateTables(schema.Tables);
 
-        foreach (var table in schema.Tables)
+        foreach (var table in filteredTables)
         {
             var entityName = NamingHelper.ToEntityName(table.Name);
-            var code = GenerateRepositoryClass(table);
+            var code = GenerateRepositoryClass(table, entityName);
             repositories[$"{entityName}Repository.cs"] = code;
         }
 
@@ -54,6 +56,7 @@ public class DapperGenerator : ICodeGenerator
     public string GenerateDbContext(DatabaseSchema schema, string contextName)
     {
         var sb = new StringBuilder();
+        var filteredTables = FilterDuplicateTables(schema.Tables);
         
         sb.AppendLine("using System.Data;");
         sb.AppendLine(GetConnectionUsing());
@@ -88,14 +91,15 @@ public class DapperGenerator : ICodeGenerator
         sb.AppendLine();
 
         // Generate repository properties
-        foreach (var table in schema.Tables)
+        foreach (var table in filteredTables)
         {
             var entityName = NamingHelper.ToEntityName(table.Name);
+            var collectionName = NamingHelper.ToCollectionName(entityName);
             var repositoryField = $"_{NamingHelper.ToCamelCase(entityName)}Repository";
             var repositoryProperty = $"{entityName}Repository";
             
             sb.AppendLine($"    private {repositoryProperty}? {repositoryField};");
-            sb.AppendLine($"    public {repositoryProperty} {NamingHelper.ToCollectionName(entityName)} => {repositoryField} ??= new {repositoryProperty}(Connection);");
+            sb.AppendLine($"    public {repositoryProperty} {collectionName} => {repositoryField} ??= new {repositoryProperty}(Connection);");
             sb.AppendLine();
         }
 
@@ -110,10 +114,109 @@ public class DapperGenerator : ICodeGenerator
         return sb.ToString();
     }
 
-    private string GenerateEntityClass(TableInfo table)
+    /// <summary>
+    /// Filters tables to remove duplicates that would generate the same entity name.
+    /// When duplicates are found, the pluralized version is kept (preference for table names like "users" over "user").
+    /// Other duplicates are removed entirely.
+    /// </summary>
+    /// <param name="tables">List of tables to filter.</param>
+    /// <returns>Filtered list of tables with no duplicates.</returns>
+    private static List<TableInfo> FilterDuplicateTables(List<TableInfo> tables)
     {
-        var entityName = NamingHelper.ToEntityName(table.Name);
+        // Group tables by their entity name (which singularizes the table name)
+        // and also by their collection name (pluralized form)
+        var entityGroups = tables
+            .GroupBy(t => NamingHelper.ToEntityName(t.Name), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var result = new List<TableInfo>();
+
+        foreach (var group in entityGroups)
+        {
+            if (group.Count() == 1)
+            {
+                // No duplicate, just add the table
+                result.Add(group.First());
+            }
+            else
+            {
+                // Multiple tables map to the same entity name
+                // Prefer the pluralized version (the one where table name != entity name)
+                // This means "users" is preferred over "user" since ToEntityName("users") = "User"
+                var pluralizedTable = group.FirstOrDefault(t => 
+                    !t.Name.Equals(NamingHelper.ToEntityName(t.Name), StringComparison.OrdinalIgnoreCase));
+                
+                if (pluralizedTable != null)
+                {
+                    result.Add(pluralizedTable);
+                }
+                else
+                {
+                    // If no pluralized version found, just take the first one
+                    result.Add(group.First());
+                }
+            }
+        }
+
+        // Second pass: check for collection name duplicates and remove them
+        var collectionGroups = result
+            .GroupBy(t => NamingHelper.ToCollectionName(NamingHelper.ToEntityName(t.Name)), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var finalResult = new List<TableInfo>();
+
+        foreach (var group in collectionGroups)
+        {
+            if (group.Count() == 1)
+            {
+                finalResult.Add(group.First());
+            }
+            else
+            {
+                // Multiple tables would generate the same collection name
+                // Prefer the one with pluralized table name
+                var pluralizedTable = group.FirstOrDefault(t => 
+                    !t.Name.Equals(NamingHelper.ToEntityName(t.Name), StringComparison.OrdinalIgnoreCase));
+                
+                if (pluralizedTable != null)
+                {
+                    finalResult.Add(pluralizedTable);
+                }
+                else
+                {
+                    finalResult.Add(group.First());
+                }
+            }
+        }
+
+        return finalResult;
+    }
+
+    /// <summary>
+    /// Builds a mapping from column names to unique property names for a given table.
+    /// This ensures consistent property names are used across entity and repository generation.
+    /// </summary>
+    private static Dictionary<string, string> BuildColumnToPropertyMap(TableInfo table, string entityName)
+    {
+        var propertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { entityName };
+        var columnToProperty = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var column in table.Columns)
+        {
+            var propertyName = GetUniquePropertyName(NamingHelper.ToPascalCase(column.Column), entityName, propertyNames);
+            propertyNames.Add(propertyName);
+            columnToProperty[column.Column] = propertyName;
+        }
+
+        return columnToProperty;
+    }
+
+    private string GenerateEntityClass(TableInfo table, string entityName)
+    {
         var sb = new StringBuilder();
+        
+        // Build column to property mapping
+        var columnToProperty = BuildColumnToPropertyMap(table, entityName);
 
         sb.AppendLine("using System.ComponentModel.DataAnnotations;");
         sb.AppendLine("using System.ComponentModel.DataAnnotations.Schema;");
@@ -139,7 +242,7 @@ public class DapperGenerator : ICodeGenerator
         // Generate properties for columns
         foreach (var column in table.Columns)
         {
-            var propertyName = NamingHelper.ToPascalCase(column.Column);
+            var propertyName = columnToProperty[column.Column];
             var csharpType = _typeMapper.MapToCSharpType(column.Type, column.Nullable);
 
             // Detect primary key
@@ -150,9 +253,7 @@ public class DapperGenerator : ICodeGenerator
             // Add comment if present
             if (!string.IsNullOrEmpty(column.Comment))
             {
-                sb.AppendLine("    /// <summary>");
-                sb.AppendLine($"    /// {column.Comment}");
-                sb.AppendLine("    /// </summary>");
+                AppendXmlComment(sb, column.Comment, "    ");
             }
 
             if (isPrimaryKey)
@@ -193,17 +294,21 @@ public class DapperGenerator : ICodeGenerator
         return sb.ToString();
     }
 
-    private string GenerateRepositoryClass(TableInfo table)
+    private string GenerateRepositoryClass(TableInfo table, string entityName)
     {
-        var entityName = NamingHelper.ToEntityName(table.Name);
         var sb = new StringBuilder();
         var tableName = GetFullTableName(table);
+        
+        // Build column to property mapping (same logic as entity generation)
+        var columnToProperty = BuildColumnToPropertyMap(table, entityName);
         
         // Detect primary key column
         var pkColumn = table.Columns.FirstOrDefault(c => 
             c.Column.Equals("id", StringComparison.OrdinalIgnoreCase)) ?? 
             table.Columns.FirstOrDefault();
-        var pkPropertyName = pkColumn != null ? NamingHelper.ToPascalCase(pkColumn.Column) : "Id";
+        var pkPropertyName = pkColumn != null 
+            ? columnToProperty[pkColumn.Column]
+            : "Id";
         var pkColumnName = pkColumn?.Column ?? "id";
         var pkType = pkColumn != null ? _typeMapper.MapToCSharpType(pkColumn.Type, false) : "int";
 
@@ -252,7 +357,7 @@ public class DapperGenerator : ICodeGenerator
         if (insertColumns.Count > 0)
         {
             var columnNames = string.Join(", ", insertColumns.Select(c => c.Column));
-            var paramNames = string.Join(", ", insertColumns.Select(c => $"@{NamingHelper.ToPascalCase(c.Column)}"));
+            var paramNames = string.Join(", ", insertColumns.Select(c => $"@{columnToProperty[c.Column]}"));
             
             sb.AppendLine($"        const string sql = \"INSERT INTO {tableName} ({columnNames}) VALUES ({paramNames})\";");
             sb.AppendLine("        return await _connection.ExecuteAsync(sql, entity);");
@@ -276,8 +381,7 @@ public class DapperGenerator : ICodeGenerator
         
         if (updateColumns.Count > 0)
         {
-            var setClauses = string.Join(", ", updateColumns.Select(c => 
-                $"{c.Column} = @{NamingHelper.ToPascalCase(c.Column)}"));
+            var setClauses = string.Join(", ", updateColumns.Select(c => $"{c.Column} = @{columnToProperty[c.Column]}"));
             
             sb.AppendLine($"        const string sql = \"UPDATE {tableName} SET {setClauses} WHERE {pkColumnName} = @{pkPropertyName}\";");
             sb.AppendLine("        return await _connection.ExecuteAsync(sql, entity);");
@@ -312,7 +416,7 @@ public class DapperGenerator : ICodeGenerator
         };
     }
 
-    private string GetFullTableName(TableInfo table)
+    private static string GetFullTableName(TableInfo table)
     {
         return string.IsNullOrEmpty(table.Schema) ? table.Name : $"{table.Schema}.{table.Name}";
     }
@@ -341,5 +445,71 @@ public class DapperGenerator : ICodeGenerator
             DatabaseType.Sqlite => "using Microsoft.Data.Sqlite;",
             _ => "using Microsoft.Data.SqlClient;"
         };
+    }
+
+    /// <summary>
+    /// Gets a unique property name that doesn't conflict with the entity name or other properties.
+    /// </summary>
+    /// <param name="proposedName">The proposed property name.</param>
+    /// <param name="entityName">The name of the containing entity.</param>
+    /// <param name="existingNames">Set of existing property names (including entity name).</param>
+    /// <returns>A unique property name.</returns>
+    private static string GetUniquePropertyName(string proposedName, string entityName, HashSet<string> existingNames)
+    {
+        // If the property name equals the entity name, add a suffix
+        if (proposedName.Equals(entityName, StringComparison.OrdinalIgnoreCase))
+        {
+            proposedName = $"{proposedName}Value";
+        }
+        
+        // If there's still a conflict with existing names, add numeric suffix
+        var baseName = proposedName;
+        var counter = 1;
+        while (existingNames.Contains(proposedName))
+        {
+            proposedName = $"{baseName}{counter}";
+            counter++;
+        }
+        
+        return proposedName;
+    }
+
+    /// <summary>
+    /// Appends a properly formatted XML documentation comment to the StringBuilder.
+    /// Handles multi-line comments by prefixing each line with the XML comment syntax.
+    /// </summary>
+    /// <param name="sb">The StringBuilder to append to.</param>
+    /// <param name="comment">The comment text (may contain newlines).</param>
+    /// <param name="indent">The indentation to use (e.g., "    " for 4 spaces).</param>
+    private static void AppendXmlComment(StringBuilder sb, string comment, string indent)
+    {
+        // Normalize line endings and split into lines
+        var lines = comment
+            .Replace("\r\n", "\n")
+            .Replace("\r", "\n")
+            .Split('\n')
+            .Select(line => EscapeXmlComment(line.Trim()))
+            .Where(line => !string.IsNullOrEmpty(line))
+            .ToArray();
+
+        sb.AppendLine($"{indent}/// <summary>");
+        
+        foreach (var line in lines)
+        {
+            sb.AppendLine($"{indent}/// {line}");
+        }
+        
+        sb.AppendLine($"{indent}/// </summary>");
+    }
+
+    /// <summary>
+    /// Escapes special characters in XML comments.
+    /// </summary>
+    private static string EscapeXmlComment(string value)
+    {
+        return value
+            .Replace("&", "&amp;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;");
     }
 }

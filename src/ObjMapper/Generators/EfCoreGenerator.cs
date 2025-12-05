@@ -23,11 +23,12 @@ public class EfCoreGenerator : ICodeGenerator
     public Dictionary<string, string> GenerateEntities(DatabaseSchema schema)
     {
         var entities = new Dictionary<string, string>();
+        var filteredTables = FilterDuplicateTables(schema.Tables);
 
-        foreach (var table in schema.Tables)
+        foreach (var table in filteredTables)
         {
             var entityName = NamingHelper.ToEntityName(table.Name);
-            var code = GenerateEntityClass(table, schema);
+            var code = GenerateEntityClass(table, schema, entityName);
             entities[$"{entityName}.cs"] = code;
         }
 
@@ -37,11 +38,12 @@ public class EfCoreGenerator : ICodeGenerator
     public Dictionary<string, string> GenerateConfigurations(DatabaseSchema schema)
     {
         var configurations = new Dictionary<string, string>();
+        var filteredTables = FilterDuplicateTables(schema.Tables);
 
-        foreach (var table in schema.Tables)
+        foreach (var table in filteredTables)
         {
             var entityName = NamingHelper.ToEntityName(table.Name);
-            var code = GenerateConfigurationClass(table, schema);
+            var code = GenerateConfigurationClass(table, schema, entityName);
             configurations[$"{entityName}Configuration.cs"] = code;
         }
 
@@ -51,6 +53,7 @@ public class EfCoreGenerator : ICodeGenerator
     public string GenerateDbContext(DatabaseSchema schema, string contextName)
     {
         var sb = new StringBuilder();
+        var filteredTables = FilterDuplicateTables(schema.Tables);
         
         sb.AppendLine("using Microsoft.EntityFrameworkCore;");
         sb.AppendLine();
@@ -64,7 +67,7 @@ public class EfCoreGenerator : ICodeGenerator
         sb.AppendLine();
 
         // Generate DbSet properties
-        foreach (var table in schema.Tables)
+        foreach (var table in filteredTables)
         {
             var entityName = NamingHelper.ToEntityName(table.Name);
             var collectionName = NamingHelper.ToCollectionName(entityName);
@@ -78,7 +81,7 @@ public class EfCoreGenerator : ICodeGenerator
         sb.AppendLine();
 
         // Apply configurations
-        foreach (var table in schema.Tables)
+        foreach (var table in filteredTables)
         {
             var entityName = NamingHelper.ToEntityName(table.Name);
             sb.AppendLine($"        modelBuilder.ApplyConfiguration(new {entityName}Configuration());");
@@ -90,10 +93,111 @@ public class EfCoreGenerator : ICodeGenerator
         return sb.ToString();
     }
 
-    private string GenerateEntityClass(TableInfo table, DatabaseSchema schema)
+    /// <summary>
+    /// Filters tables to remove duplicates that would generate the same entity name.
+    /// When duplicates are found, the pluralized version is kept (preference for table names like "users" over "user").
+    /// Other duplicates are removed entirely.
+    /// </summary>
+    /// <param name="tables">List of tables to filter.</param>
+    /// <returns>Filtered list of tables with no duplicates.</returns>
+    private static List<TableInfo> FilterDuplicateTables(List<TableInfo> tables)
     {
-        var entityName = NamingHelper.ToEntityName(table.Name);
+        // Group tables by their entity name (which singularizes the table name)
+        // and also by their collection name (pluralized form)
+        var entityGroups = tables
+            .GroupBy(t => NamingHelper.ToEntityName(t.Name), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var result = new List<TableInfo>();
+
+        foreach (var group in entityGroups)
+        {
+            if (group.Count() == 1)
+            {
+                // No duplicate, just add the table
+                result.Add(group.First());
+            }
+            else
+            {
+                // Multiple tables map to the same entity name
+                // Prefer the pluralized version (the one where table name != entity name)
+                // This means "users" is preferred over "user" since ToEntityName("users") = "User"
+                var pluralizedTable = group.FirstOrDefault(t => 
+                    !t.Name.Equals(NamingHelper.ToEntityName(t.Name), StringComparison.OrdinalIgnoreCase));
+                
+                if (pluralizedTable != null)
+                {
+                    result.Add(pluralizedTable);
+                }
+                else
+                {
+                    // If no pluralized version found, just take the first one
+                    result.Add(group.First());
+                }
+            }
+        }
+
+        // Second pass: check for collection name duplicates and remove them
+        var collectionGroups = result
+            .GroupBy(t => NamingHelper.ToCollectionName(NamingHelper.ToEntityName(t.Name)), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var finalResult = new List<TableInfo>();
+
+        foreach (var group in collectionGroups)
+        {
+            if (group.Count() == 1)
+            {
+                finalResult.Add(group.First());
+            }
+            else
+            {
+                // Multiple tables would generate the same collection name
+                // Prefer the one with pluralized table name
+                var pluralizedTable = group.FirstOrDefault(t => 
+                    !t.Name.Equals(NamingHelper.ToEntityName(t.Name), StringComparison.OrdinalIgnoreCase));
+                
+                if (pluralizedTable != null)
+                {
+                    finalResult.Add(pluralizedTable);
+                }
+                else
+                {
+                    finalResult.Add(group.First());
+                }
+            }
+        }
+
+        return finalResult;
+    }
+
+    /// <summary>
+    /// Builds a mapping from column names to unique property names for a given table.
+    /// This ensures consistent property names are used across entity and configuration generation.
+    /// </summary>
+    private static Dictionary<string, string> BuildColumnToPropertyMap(TableInfo table, string entityName)
+    {
+        var propertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { entityName };
+        var columnToProperty = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var column in table.Columns)
+        {
+            var propertyName = GetUniquePropertyName(NamingHelper.ToPascalCase(column.Column), entityName, propertyNames);
+            propertyNames.Add(propertyName);
+            columnToProperty[column.Column] = propertyName;
+        }
+
+        return columnToProperty;
+    }
+
+    private string GenerateEntityClass(TableInfo table, DatabaseSchema schema, string entityName)
+    {
         var sb = new StringBuilder();
+
+        // Build column to property mapping
+        var columnToProperty = BuildColumnToPropertyMap(table, entityName);
+        var propertyNames = new HashSet<string>(columnToProperty.Values, StringComparer.OrdinalIgnoreCase);
+        propertyNames.Add(entityName);
 
         sb.AppendLine($"namespace {_namespace};");
         sb.AppendLine();
@@ -114,15 +218,13 @@ public class EfCoreGenerator : ICodeGenerator
         // Generate properties for columns
         foreach (var column in table.Columns)
         {
-            var propertyName = NamingHelper.ToPascalCase(column.Column);
+            var propertyName = columnToProperty[column.Column];
             var csharpType = _typeMapper.MapToCSharpType(column.Type, column.Nullable);
 
             // Add comment if present
             if (!string.IsNullOrEmpty(column.Comment))
             {
-                sb.AppendLine("    /// <summary>");
-                sb.AppendLine($"    /// {column.Comment}");
-                sb.AppendLine("    /// </summary>");
+                AppendXmlComment(sb, column.Comment, "    ");
             }
 
             if (csharpType == "string" && !column.Nullable)
@@ -143,7 +245,8 @@ public class EfCoreGenerator : ICodeGenerator
         foreach (var rel in table.OutgoingRelationships)
         {
             var relatedEntityName = NamingHelper.ToEntityName(rel.TableTo);
-            var propertyName = relatedEntityName;
+            var propertyName = GetUniquePropertyName(relatedEntityName, entityName, propertyNames);
+            propertyNames.Add(propertyName);
             
             sb.AppendLine();
             sb.AppendLine($"    public virtual {relatedEntityName}? {propertyName} {{ get; set; }}");
@@ -153,7 +256,8 @@ public class EfCoreGenerator : ICodeGenerator
         foreach (var rel in table.IncomingRelationships)
         {
             var relatedEntityName = NamingHelper.ToEntityName(rel.TableFrom);
-            var collectionName = NamingHelper.ToCollectionName(relatedEntityName);
+            var collectionName = GetUniquePropertyName(NamingHelper.ToCollectionName(relatedEntityName), entityName, propertyNames);
+            propertyNames.Add(collectionName);
             
             sb.AppendLine();
             sb.AppendLine($"    public virtual ICollection<{relatedEntityName}> {collectionName} {{ get; set; }} = [];");
@@ -164,10 +268,14 @@ public class EfCoreGenerator : ICodeGenerator
         return sb.ToString();
     }
 
-    private string GenerateConfigurationClass(TableInfo table, DatabaseSchema schema)
+    private string GenerateConfigurationClass(TableInfo table, DatabaseSchema schema, string entityName)
     {
-        var entityName = NamingHelper.ToEntityName(table.Name);
         var sb = new StringBuilder();
+        
+        // Build column to property mapping (same logic as entity generation)
+        var columnToProperty = BuildColumnToPropertyMap(table, entityName);
+        var propertyNames = new HashSet<string>(columnToProperty.Values, StringComparer.OrdinalIgnoreCase);
+        propertyNames.Add(entityName);
 
         sb.AppendLine("using Microsoft.EntityFrameworkCore;");
         sb.AppendLine("using Microsoft.EntityFrameworkCore.Metadata.Builders;");
@@ -201,7 +309,7 @@ public class EfCoreGenerator : ICodeGenerator
         if (potentialPrimaryKeys.Count > 0)
         {
             var pkColumn = potentialPrimaryKeys[0];
-            var pkPropertyName = NamingHelper.ToPascalCase(pkColumn.Column);
+            var pkPropertyName = columnToProperty[pkColumn.Column];
             sb.AppendLine($"        builder.HasKey(e => e.{pkPropertyName});");
             sb.AppendLine();
         }
@@ -209,7 +317,8 @@ public class EfCoreGenerator : ICodeGenerator
         // Configure each column
         foreach (var column in table.Columns)
         {
-            var propertyName = NamingHelper.ToPascalCase(column.Column);
+            var propertyName = columnToProperty[column.Column];
+            
             sb.Append($"        builder.Property(e => e.{propertyName})");
             sb.AppendLine();
             sb.AppendLine($"            .HasColumnName(\"{column.Column}\")");
@@ -239,7 +348,15 @@ public class EfCoreGenerator : ICodeGenerator
         // Configure indexes
         foreach (var index in table.Indexes)
         {
-            var keyProperties = index.Keys.Select(k => $"e.{NamingHelper.ToPascalCase(k)}");
+            var keyProperties = index.Keys.Select(k => 
+            {
+                // Use the column to property mapping
+                if (columnToProperty.TryGetValue(k, out var propName))
+                {
+                    return $"e.{propName}";
+                }
+                return $"e.{NamingHelper.ToPascalCase(k)}";
+            });
             var keysExpression = index.Keys.Length == 1 
                 ? keyProperties.First() 
                 : $"new {{ {string.Join(", ", keyProperties)} }}";
@@ -266,25 +383,35 @@ public class EfCoreGenerator : ICodeGenerator
         foreach (var rel in table.OutgoingRelationships)
         {
             var relatedEntityName = NamingHelper.ToEntityName(rel.TableTo);
+            var navPropertyName = GetUniquePropertyName(relatedEntityName, entityName, propertyNames);
             var inverseCollectionName = NamingHelper.ToCollectionName(entityName);
 
             // Handle composite keys
             if (rel.ForeignKeys.Length == 1)
             {
-                var foreignKeyProperty = NamingHelper.ToPascalCase(rel.ForeignKeys[0]);
+                // Use the column to property mapping for foreign key
+                var foreignKeyProperty = columnToProperty.TryGetValue(rel.ForeignKeys[0], out var fkProp) 
+                    ? fkProp 
+                    : NamingHelper.ToPascalCase(rel.ForeignKeys[0]);
                 var principalKeyProperty = NamingHelper.ToPascalCase(rel.Keys[0]);
 
-                sb.AppendLine($"        builder.HasOne(e => e.{relatedEntityName})");
+                sb.AppendLine($"        builder.HasOne(e => e.{navPropertyName})");
                 sb.AppendLine($"            .WithMany(e => e.{inverseCollectionName})");
                 sb.AppendLine($"            .HasForeignKey(e => e.{foreignKeyProperty})");
                 sb.AppendLine($"            .HasPrincipalKey(e => e.{principalKeyProperty});");
             }
             else
             {
-                var foreignKeyProperties = rel.ForeignKeys.Select(k => $"e.{NamingHelper.ToPascalCase(k)}");
+                var foreignKeyProperties = rel.ForeignKeys.Select(k => 
+                {
+                    var propName = columnToProperty.TryGetValue(k, out var fkProp) 
+                        ? fkProp 
+                        : NamingHelper.ToPascalCase(k);
+                    return $"e.{propName}";
+                });
                 var principalKeyProperties = rel.Keys.Select(k => $"e.{NamingHelper.ToPascalCase(k)}");
 
-                sb.AppendLine($"        builder.HasOne(e => e.{relatedEntityName})");
+                sb.AppendLine($"        builder.HasOne(e => e.{navPropertyName})");
                 sb.AppendLine($"            .WithMany(e => e.{inverseCollectionName})");
                 sb.AppendLine($"            .HasForeignKey(e => new {{ {string.Join(", ", foreignKeyProperties)} }})");
                 sb.AppendLine($"            .HasPrincipalKey(e => new {{ {string.Join(", ", principalKeyProperties)} }});");
@@ -310,6 +437,33 @@ public class EfCoreGenerator : ICodeGenerator
         };
     }
 
+    /// <summary>
+    /// Gets a unique property name that doesn't conflict with the entity name or other properties.
+    /// </summary>
+    /// <param name="proposedName">The proposed property name.</param>
+    /// <param name="entityName">The name of the containing entity.</param>
+    /// <param name="existingNames">Set of existing property names (including entity name).</param>
+    /// <returns>A unique property name.</returns>
+    private static string GetUniquePropertyName(string proposedName, string entityName, HashSet<string> existingNames)
+    {
+        // If the property name equals the entity name, add a suffix
+        if (proposedName.Equals(entityName, StringComparison.OrdinalIgnoreCase))
+        {
+            proposedName = $"{proposedName}Value";
+        }
+        
+        // If there's still a conflict with existing names, add numeric suffix
+        var baseName = proposedName;
+        var counter = 1;
+        while (existingNames.Contains(proposedName))
+        {
+            proposedName = $"{baseName}{counter}";
+            counter++;
+        }
+        
+        return proposedName;
+    }
+
     private static bool NeedsColumnType(string dbType)
     {
         var type = dbType.ToUpperInvariant();
@@ -322,6 +476,50 @@ public class EfCoreGenerator : ICodeGenerator
 
     private static string EscapeString(string value)
     {
-        return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return value
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\r\n", "\\n")
+            .Replace("\r", "\\n")
+            .Replace("\n", "\\n");
+    }
+
+    /// <summary>
+    /// Appends a properly formatted XML documentation comment to the StringBuilder.
+    /// Handles multi-line comments by prefixing each line with the XML comment syntax.
+    /// </summary>
+    /// <param name="sb">The StringBuilder to append to.</param>
+    /// <param name="comment">The comment text (may contain newlines).</param>
+    /// <param name="indent">The indentation to use (e.g., "    " for 4 spaces).</param>
+    private static void AppendXmlComment(StringBuilder sb, string comment, string indent)
+    {
+        // Normalize line endings and split into lines
+        var lines = comment
+            .Replace("\r\n", "\n")
+            .Replace("\r", "\n")
+            .Split('\n')
+            .Select(line => EscapeXmlComment(line.Trim()))
+            .Where(line => !string.IsNullOrEmpty(line))
+            .ToArray();
+
+        sb.AppendLine($"{indent}/// <summary>");
+        
+        foreach (var line in lines)
+        {
+            sb.AppendLine($"{indent}/// {line}");
+        }
+        
+        sb.AppendLine($"{indent}/// </summary>");
+    }
+
+    /// <summary>
+    /// Escapes special characters in XML comments.
+    /// </summary>
+    private static string EscapeXmlComment(string value)
+    {
+        return value
+            .Replace("&", "&amp;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;");
     }
 }

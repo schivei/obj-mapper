@@ -192,12 +192,31 @@ public class DapperGenerator : ICodeGenerator
         return finalResult;
     }
 
+    /// <summary>
+    /// Builds a mapping from column names to unique property names for a given table.
+    /// This ensures consistent property names are used across entity and repository generation.
+    /// </summary>
+    private static Dictionary<string, string> BuildColumnToPropertyMap(TableInfo table, string entityName)
+    {
+        var propertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { entityName };
+        var columnToProperty = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var column in table.Columns)
+        {
+            var propertyName = GetUniquePropertyName(NamingHelper.ToPascalCase(column.Column), entityName, propertyNames);
+            propertyNames.Add(propertyName);
+            columnToProperty[column.Column] = propertyName;
+        }
+
+        return columnToProperty;
+    }
+
     private string GenerateEntityClass(TableInfo table, string entityName)
     {
         var sb = new StringBuilder();
         
-        // Collect all property names first to detect conflicts
-        var propertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { entityName };
+        // Build column to property mapping
+        var columnToProperty = BuildColumnToPropertyMap(table, entityName);
 
         sb.AppendLine("using System.ComponentModel.DataAnnotations;");
         sb.AppendLine("using System.ComponentModel.DataAnnotations.Schema;");
@@ -223,9 +242,7 @@ public class DapperGenerator : ICodeGenerator
         // Generate properties for columns
         foreach (var column in table.Columns)
         {
-            var propertyName = GetUniquePropertyName(NamingHelper.ToPascalCase(column.Column), entityName, propertyNames);
-            propertyNames.Add(propertyName);
-            
+            var propertyName = columnToProperty[column.Column];
             var csharpType = _typeMapper.MapToCSharpType(column.Type, column.Nullable);
 
             // Detect primary key
@@ -282,15 +299,15 @@ public class DapperGenerator : ICodeGenerator
         var sb = new StringBuilder();
         var tableName = GetFullTableName(table);
         
-        // Track property names for this entity to handle conflicts
-        var propertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { entityName };
+        // Build column to property mapping (same logic as entity generation)
+        var columnToProperty = BuildColumnToPropertyMap(table, entityName);
         
         // Detect primary key column
         var pkColumn = table.Columns.FirstOrDefault(c => 
             c.Column.Equals("id", StringComparison.OrdinalIgnoreCase)) ?? 
             table.Columns.FirstOrDefault();
         var pkPropertyName = pkColumn != null 
-            ? GetUniquePropertyName(NamingHelper.ToPascalCase(pkColumn.Column), entityName, propertyNames) 
+            ? columnToProperty[pkColumn.Column]
             : "Id";
         var pkColumnName = pkColumn?.Column ?? "id";
         var pkType = pkColumn != null ? _typeMapper.MapToCSharpType(pkColumn.Type, false) : "int";
@@ -340,11 +357,7 @@ public class DapperGenerator : ICodeGenerator
         if (insertColumns.Count > 0)
         {
             var columnNames = string.Join(", ", insertColumns.Select(c => c.Column));
-            var paramNames = string.Join(", ", insertColumns.Select(c => 
-            {
-                var propName = GetUniquePropertyName(NamingHelper.ToPascalCase(c.Column), entityName, propertyNames);
-                return $"@{propName}";
-            }));
+            var paramNames = string.Join(", ", insertColumns.Select(c => $"@{columnToProperty[c.Column]}"));
             
             sb.AppendLine($"        const string sql = \"INSERT INTO {tableName} ({columnNames}) VALUES ({paramNames})\";");
             sb.AppendLine("        return await _connection.ExecuteAsync(sql, entity);");
@@ -368,11 +381,7 @@ public class DapperGenerator : ICodeGenerator
         
         if (updateColumns.Count > 0)
         {
-            var setClauses = string.Join(", ", updateColumns.Select(c => 
-            {
-                var propName = GetUniquePropertyName(NamingHelper.ToPascalCase(c.Column), entityName, propertyNames);
-                return $"{c.Column} = @{propName}";
-            }));
+            var setClauses = string.Join(", ", updateColumns.Select(c => $"{c.Column} = @{columnToProperty[c.Column]}"));
             
             sb.AppendLine($"        const string sql = \"UPDATE {tableName} SET {setClauses} WHERE {pkColumnName} = @{pkPropertyName}\";");
             sb.AppendLine("        return await _connection.ExecuteAsync(sql, entity);");

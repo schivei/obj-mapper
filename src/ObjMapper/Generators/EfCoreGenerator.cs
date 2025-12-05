@@ -95,6 +95,9 @@ public class EfCoreGenerator : ICodeGenerator
         var entityName = NamingHelper.ToEntityName(table.Name);
         var sb = new StringBuilder();
 
+        // Collect all property names first to detect conflicts
+        var propertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { entityName };
+
         sb.AppendLine($"namespace {_namespace};");
         sb.AppendLine();
         
@@ -114,7 +117,9 @@ public class EfCoreGenerator : ICodeGenerator
         // Generate properties for columns
         foreach (var column in table.Columns)
         {
-            var propertyName = NamingHelper.ToPascalCase(column.Column);
+            var propertyName = GetUniquePropertyName(NamingHelper.ToPascalCase(column.Column), entityName, propertyNames);
+            propertyNames.Add(propertyName);
+            
             var csharpType = _typeMapper.MapToCSharpType(column.Type, column.Nullable);
 
             // Add comment if present
@@ -141,7 +146,8 @@ public class EfCoreGenerator : ICodeGenerator
         foreach (var rel in table.OutgoingRelationships)
         {
             var relatedEntityName = NamingHelper.ToEntityName(rel.TableTo);
-            var propertyName = relatedEntityName;
+            var propertyName = GetUniquePropertyName(relatedEntityName, entityName, propertyNames);
+            propertyNames.Add(propertyName);
             
             sb.AppendLine();
             sb.AppendLine($"    public virtual {relatedEntityName}? {propertyName} {{ get; set; }}");
@@ -151,7 +157,8 @@ public class EfCoreGenerator : ICodeGenerator
         foreach (var rel in table.IncomingRelationships)
         {
             var relatedEntityName = NamingHelper.ToEntityName(rel.TableFrom);
-            var collectionName = NamingHelper.ToCollectionName(relatedEntityName);
+            var collectionName = GetUniquePropertyName(NamingHelper.ToCollectionName(relatedEntityName), entityName, propertyNames);
+            propertyNames.Add(collectionName);
             
             sb.AppendLine();
             sb.AppendLine($"    public virtual ICollection<{relatedEntityName}> {collectionName} {{ get; set; }} = [];");
@@ -166,6 +173,9 @@ public class EfCoreGenerator : ICodeGenerator
     {
         var entityName = NamingHelper.ToEntityName(table.Name);
         var sb = new StringBuilder();
+        
+        // Track property names for this entity to handle conflicts
+        var propertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { entityName };
 
         sb.AppendLine("using Microsoft.EntityFrameworkCore;");
         sb.AppendLine("using Microsoft.EntityFrameworkCore.Metadata.Builders;");
@@ -199,7 +209,7 @@ public class EfCoreGenerator : ICodeGenerator
         if (potentialPrimaryKeys.Count > 0)
         {
             var pkColumn = potentialPrimaryKeys[0];
-            var pkPropertyName = NamingHelper.ToPascalCase(pkColumn.Column);
+            var pkPropertyName = GetUniquePropertyName(NamingHelper.ToPascalCase(pkColumn.Column), entityName, propertyNames);
             sb.AppendLine($"        builder.HasKey(e => e.{pkPropertyName});");
             sb.AppendLine();
         }
@@ -207,7 +217,9 @@ public class EfCoreGenerator : ICodeGenerator
         // Configure each column
         foreach (var column in table.Columns)
         {
-            var propertyName = NamingHelper.ToPascalCase(column.Column);
+            var propertyName = GetUniquePropertyName(NamingHelper.ToPascalCase(column.Column), entityName, propertyNames);
+            propertyNames.Add(propertyName);
+            
             sb.Append($"        builder.Property(e => e.{propertyName})");
             sb.AppendLine();
             sb.AppendLine($"            .HasColumnName(\"{column.Column}\")");
@@ -237,7 +249,11 @@ public class EfCoreGenerator : ICodeGenerator
         // Configure indexes
         foreach (var index in table.Indexes)
         {
-            var keyProperties = index.Keys.Select(k => $"e.{NamingHelper.ToPascalCase(k)}");
+            var keyProperties = index.Keys.Select(k => 
+            {
+                var propName = GetUniquePropertyName(NamingHelper.ToPascalCase(k), entityName, propertyNames);
+                return $"e.{propName}";
+            });
             var keysExpression = index.Keys.Length == 1 
                 ? keyProperties.First() 
                 : $"new {{ {string.Join(", ", keyProperties)} }}";
@@ -264,25 +280,30 @@ public class EfCoreGenerator : ICodeGenerator
         foreach (var rel in table.OutgoingRelationships)
         {
             var relatedEntityName = NamingHelper.ToEntityName(rel.TableTo);
+            var navPropertyName = GetUniquePropertyName(relatedEntityName, entityName, propertyNames);
             var inverseCollectionName = NamingHelper.ToCollectionName(entityName);
 
             // Handle composite keys
             if (rel.ForeignKeys.Length == 1)
             {
-                var foreignKeyProperty = NamingHelper.ToPascalCase(rel.ForeignKeys[0]);
+                var foreignKeyProperty = GetUniquePropertyName(NamingHelper.ToPascalCase(rel.ForeignKeys[0]), entityName, propertyNames);
                 var principalKeyProperty = NamingHelper.ToPascalCase(rel.Keys[0]);
 
-                sb.AppendLine($"        builder.HasOne(e => e.{relatedEntityName})");
+                sb.AppendLine($"        builder.HasOne(e => e.{navPropertyName})");
                 sb.AppendLine($"            .WithMany(e => e.{inverseCollectionName})");
                 sb.AppendLine($"            .HasForeignKey(e => e.{foreignKeyProperty})");
                 sb.AppendLine($"            .HasPrincipalKey(e => e.{principalKeyProperty});");
             }
             else
             {
-                var foreignKeyProperties = rel.ForeignKeys.Select(k => $"e.{NamingHelper.ToPascalCase(k)}");
+                var foreignKeyProperties = rel.ForeignKeys.Select(k => 
+                {
+                    var propName = GetUniquePropertyName(NamingHelper.ToPascalCase(k), entityName, propertyNames);
+                    return $"e.{propName}";
+                });
                 var principalKeyProperties = rel.Keys.Select(k => $"e.{NamingHelper.ToPascalCase(k)}");
 
-                sb.AppendLine($"        builder.HasOne(e => e.{relatedEntityName})");
+                sb.AppendLine($"        builder.HasOne(e => e.{navPropertyName})");
                 sb.AppendLine($"            .WithMany(e => e.{inverseCollectionName})");
                 sb.AppendLine($"            .HasForeignKey(e => new {{ {string.Join(", ", foreignKeyProperties)} }})");
                 sb.AppendLine($"            .HasPrincipalKey(e => new {{ {string.Join(", ", principalKeyProperties)} }});");
@@ -306,6 +327,33 @@ public class EfCoreGenerator : ICodeGenerator
             EntityTypeMode.RecordStruct => "record struct",
             _ => "class"
         };
+    }
+
+    /// <summary>
+    /// Gets a unique property name that doesn't conflict with the entity name or other properties.
+    /// </summary>
+    /// <param name="proposedName">The proposed property name.</param>
+    /// <param name="entityName">The name of the containing entity.</param>
+    /// <param name="existingNames">Set of existing property names (including entity name).</param>
+    /// <returns>A unique property name.</returns>
+    private static string GetUniquePropertyName(string proposedName, string entityName, HashSet<string> existingNames)
+    {
+        // If the property name equals the entity name, add a suffix
+        if (proposedName.Equals(entityName, StringComparison.OrdinalIgnoreCase))
+        {
+            proposedName = $"{proposedName}Value";
+        }
+        
+        // If there's still a conflict with existing names, add numeric suffix
+        var baseName = proposedName;
+        var counter = 1;
+        while (existingNames.Contains(proposedName))
+        {
+            proposedName = $"{baseName}{counter}";
+            counter++;
+        }
+        
+        return proposedName;
     }
 
     private static bool NeedsColumnType(string dbType)

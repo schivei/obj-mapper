@@ -114,6 +114,9 @@ public class DapperGenerator : ICodeGenerator
     {
         var entityName = NamingHelper.ToEntityName(table.Name);
         var sb = new StringBuilder();
+        
+        // Collect all property names first to detect conflicts
+        var propertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { entityName };
 
         sb.AppendLine("using System.ComponentModel.DataAnnotations;");
         sb.AppendLine("using System.ComponentModel.DataAnnotations.Schema;");
@@ -139,7 +142,9 @@ public class DapperGenerator : ICodeGenerator
         // Generate properties for columns
         foreach (var column in table.Columns)
         {
-            var propertyName = NamingHelper.ToPascalCase(column.Column);
+            var propertyName = GetUniquePropertyName(NamingHelper.ToPascalCase(column.Column), entityName, propertyNames);
+            propertyNames.Add(propertyName);
+            
             var csharpType = _typeMapper.MapToCSharpType(column.Type, column.Nullable);
 
             // Detect primary key
@@ -197,11 +202,16 @@ public class DapperGenerator : ICodeGenerator
         var sb = new StringBuilder();
         var tableName = GetFullTableName(table);
         
+        // Track property names for this entity to handle conflicts
+        var propertyNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { entityName };
+        
         // Detect primary key column
         var pkColumn = table.Columns.FirstOrDefault(c => 
             c.Column.Equals("id", StringComparison.OrdinalIgnoreCase)) ?? 
             table.Columns.FirstOrDefault();
-        var pkPropertyName = pkColumn != null ? NamingHelper.ToPascalCase(pkColumn.Column) : "Id";
+        var pkPropertyName = pkColumn != null 
+            ? GetUniquePropertyName(NamingHelper.ToPascalCase(pkColumn.Column), entityName, propertyNames) 
+            : "Id";
         var pkColumnName = pkColumn?.Column ?? "id";
         var pkType = pkColumn != null ? _typeMapper.MapToCSharpType(pkColumn.Type, false) : "int";
 
@@ -250,7 +260,11 @@ public class DapperGenerator : ICodeGenerator
         if (insertColumns.Count > 0)
         {
             var columnNames = string.Join(", ", insertColumns.Select(c => c.Column));
-            var paramNames = string.Join(", ", insertColumns.Select(c => $"@{NamingHelper.ToPascalCase(c.Column)}"));
+            var paramNames = string.Join(", ", insertColumns.Select(c => 
+            {
+                var propName = GetUniquePropertyName(NamingHelper.ToPascalCase(c.Column), entityName, propertyNames);
+                return $"@{propName}";
+            }));
             
             sb.AppendLine($"        const string sql = \"INSERT INTO {tableName} ({columnNames}) VALUES ({paramNames})\";");
             sb.AppendLine("        return await _connection.ExecuteAsync(sql, entity);");
@@ -275,7 +289,10 @@ public class DapperGenerator : ICodeGenerator
         if (updateColumns.Count > 0)
         {
             var setClauses = string.Join(", ", updateColumns.Select(c => 
-                $"{c.Column} = @{NamingHelper.ToPascalCase(c.Column)}"));
+            {
+                var propName = GetUniquePropertyName(NamingHelper.ToPascalCase(c.Column), entityName, propertyNames);
+                return $"{c.Column} = @{propName}";
+            }));
             
             sb.AppendLine($"        const string sql = \"UPDATE {tableName} SET {setClauses} WHERE {pkColumnName} = @{pkPropertyName}\";");
             sb.AppendLine("        return await _connection.ExecuteAsync(sql, entity);");
@@ -339,6 +356,33 @@ public class DapperGenerator : ICodeGenerator
             DatabaseType.Sqlite => "using Microsoft.Data.Sqlite;",
             _ => "using Microsoft.Data.SqlClient;"
         };
+    }
+
+    /// <summary>
+    /// Gets a unique property name that doesn't conflict with the entity name or other properties.
+    /// </summary>
+    /// <param name="proposedName">The proposed property name.</param>
+    /// <param name="entityName">The name of the containing entity.</param>
+    /// <param name="existingNames">Set of existing property names (including entity name).</param>
+    /// <returns>A unique property name.</returns>
+    private static string GetUniquePropertyName(string proposedName, string entityName, HashSet<string> existingNames)
+    {
+        // If the property name equals the entity name, add a suffix
+        if (proposedName.Equals(entityName, StringComparison.OrdinalIgnoreCase))
+        {
+            proposedName = $"{proposedName}Value";
+        }
+        
+        // If there's still a conflict with existing names, add numeric suffix
+        var baseName = proposedName;
+        var counter = 1;
+        while (existingNames.Contains(proposedName))
+        {
+            proposedName = $"{baseName}{counter}";
+            counter++;
+        }
+        
+        return proposedName;
     }
 
     /// <summary>

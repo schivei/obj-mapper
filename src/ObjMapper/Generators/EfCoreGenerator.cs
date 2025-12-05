@@ -120,9 +120,7 @@ public class EfCoreGenerator : ICodeGenerator
             // Add comment if present
             if (!string.IsNullOrEmpty(column.Comment))
             {
-                sb.AppendLine("    /// <summary>");
-                sb.AppendLine($"    /// {column.Comment}");
-                sb.AppendLine("    /// </summary>");
+                AppendXmlComment(sb, column.Comment, "    ");
             }
 
             if (csharpType == "string" && !column.Nullable)
@@ -322,6 +320,50 @@ public class EfCoreGenerator : ICodeGenerator
 
     private static string EscapeString(string value)
     {
-        return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return value
+            .Replace("\\", "\\\\")
+            .Replace("\"", "\\\"")
+            .Replace("\r\n", "\\n")
+            .Replace("\r", "\\n")
+            .Replace("\n", "\\n");
+    }
+
+    /// <summary>
+    /// Appends a properly formatted XML documentation comment to the StringBuilder.
+    /// Handles multi-line comments by prefixing each line with the XML comment syntax.
+    /// </summary>
+    /// <param name="sb">The StringBuilder to append to.</param>
+    /// <param name="comment">The comment text (may contain newlines).</param>
+    /// <param name="indent">The indentation to use (e.g., "    " for 4 spaces).</param>
+    private static void AppendXmlComment(StringBuilder sb, string comment, string indent)
+    {
+        // Normalize line endings and split into lines
+        var lines = comment
+            .Replace("\r\n", "\n")
+            .Replace("\r", "\n")
+            .Split('\n')
+            .Select(line => EscapeXmlComment(line.Trim()))
+            .Where(line => !string.IsNullOrEmpty(line))
+            .ToArray();
+
+        sb.AppendLine($"{indent}/// <summary>");
+        
+        foreach (var line in lines)
+        {
+            sb.AppendLine($"{indent}/// {line}");
+        }
+        
+        sb.AppendLine($"{indent}/// </summary>");
+    }
+
+    /// <summary>
+    /// Escapes special characters in XML comments.
+    /// </summary>
+    private static string EscapeXmlComment(string value)
+    {
+        return value
+            .Replace("&", "&amp;")
+            .Replace("<", "&lt;")
+            .Replace(">", "&gt;");
     }
 }

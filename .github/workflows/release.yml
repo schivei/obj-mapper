@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write  # Required for creating releases
+
 env:
   DOTNET_VERSION: '9.0.x'
   DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
@@ -14,6 +17,8 @@ jobs:
   release:
     name: Build and Publish
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required for creating releases
     
     steps:
     - name: Checkout

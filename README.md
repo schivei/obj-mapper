@@ -17,22 +17,39 @@ dotnet tool install ObjMapper
 
 ## Usage
 
+The tool supports two modes of operation:
+
+### Mode 1: CSV Files
 ```bash
 omap <csv-file> -t <mapping-type> -d <database-type> [options]
 ```
 
+### Mode 2: Database Connection
+```bash
+omap --connection-string "<connection-string>" -t <mapping-type> [options]
+```
+
+When using a connection string, the schema is extracted directly from the database, eliminating the need for CSV files. The database type is auto-detected from the connection string.
+
 ### Arguments
 
-- `csv`: CSV file with schema information (required)
+- `csv`: CSV file with schema information (optional if using --connection-string)
   - Columns: `schema`, `table`, `column`, `nullable`, `type`, `comment`
 
 ### Options
+
+- `--connection-string, --cs`: Database connection string (alternative to CSV files)
+  - Schema will be extracted directly from the database
+  - Database type is auto-detected when possible
+
+- `-s, --schema`: Database schema to extract (optional, used with --connection-string)
+  - Default: `public` for PostgreSQL, `dbo` for SQL Server, database name for MySQL
 
 - `-t, --type`: Type of mapping to generate (required)
   - `efcore`: Entity Framework Core entities and configurations
   - `dapper`: Dapper entities and repositories
 
-- `-d, --database`: Database type (required)
+- `-d, --database`: Database type (required for CSV mode, auto-detected for connection string mode)
   - `mysql`: MySQL
   - `postgre` or `postgresql`: PostgreSQL
   - `sqlserver` or `mssql`: SQL Server
@@ -133,10 +150,29 @@ Available configuration keys:
 
 ## Examples
 
-### Generate EF Core mappings
+### Generate EF Core mappings from CSV
 
 ```bash
 omap schema.csv -t efcore -d postgresql -o ./Generated -n MyApp.Data
+```
+
+### Generate from database connection
+
+```bash
+# PostgreSQL
+omap --cs "Host=localhost;Database=mydb;Username=user;Password=pass" -t efcore -o ./Generated
+
+# MySQL
+omap --cs "Server=localhost;Database=mydb;User=user;Password=pass" -t dapper -o ./Generated
+
+# SQL Server
+omap --cs "Server=localhost;Database=mydb;User Id=user;Password=pass;TrustServerCertificate=True" -t efcore -o ./Generated
+
+# SQLite
+omap --cs "Data Source=mydb.sqlite" -t efcore -o ./Generated
+
+# With schema filter
+omap --cs "Host=localhost;Database=mydb;Username=user;Password=pass" -t efcore -s sales -o ./Generated
 ```
 
 ### Generate Dapper mappings with relationships and indexes

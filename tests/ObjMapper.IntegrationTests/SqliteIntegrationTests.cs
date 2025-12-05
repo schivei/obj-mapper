@@ -185,6 +185,10 @@ public class SqliteIntegrationTests : IDisposable
         // Query columns for each table
         foreach (var table in tables)
         {
+            // Validate table name contains only safe characters (alphanumeric and underscore)
+            if (!System.Text.RegularExpressions.Regex.IsMatch(table, @"^[a-zA-Z_][a-zA-Z0-9_]*$"))
+                continue;
+                
             using var colCommand = _connection.CreateCommand();
             colCommand.CommandText = $"PRAGMA table_info({table})";
             using var reader = colCommand.ExecuteReader();
@@ -228,6 +232,10 @@ public class SqliteIntegrationTests : IDisposable
         // Query foreign keys for each table
         foreach (var table in tables)
         {
+            // Validate table name contains only safe characters
+            if (!System.Text.RegularExpressions.Regex.IsMatch(table, @"^[a-zA-Z_][a-zA-Z0-9_]*$"))
+                continue;
+                
             using var fkCommand = _connection.CreateCommand();
             fkCommand.CommandText = $"PRAGMA foreign_key_list({table})";
             using var reader = fkCommand.ExecuteReader();

@@ -5,7 +5,9 @@ namespace ObjMapper.Models;
 /// </summary>
 public class CommandOptions
 {
-    public FileInfo SchemaFile { get; set; } = null!;
+    public FileInfo? SchemaFile { get; set; }
+    public string? ConnectionString { get; set; }
+    public string? SchemaFilter { get; set; }
     public string MappingType { get; set; } = string.Empty;
     public string DatabaseType { get; set; } = string.Empty;
     public FileInfo? RelationshipsFile { get; set; }
@@ -16,4 +18,9 @@ public class CommandOptions
     public string EntityMode { get; set; } = "class";
     public string Locale { get; set; } = "en-us";
     public bool NoPluralizer { get; set; } = false;
+    
+    /// <summary>
+    /// Whether to use connection string mode instead of CSV files.
+    /// </summary>
+    public bool UseConnectionString => !string.IsNullOrEmpty(ConnectionString);
 }

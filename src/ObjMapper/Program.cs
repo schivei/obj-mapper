@@ -1,5 +1,4 @@
 using System.CommandLine;
-using System.CommandLine.Binding;
 using ObjMapper.Generators;
 using ObjMapper.Models;
 using ObjMapper.Parsers;
@@ -21,16 +20,20 @@ var configCommand = new Command("config", "Manage omap configuration");
 
 // Config set command
 var configSetCommand = new Command("set", "Set a configuration value");
-var configKeyArg = new Argument<string>("key", "Configuration key (locale, namespace, database, type, entity-mode, context, no-pluralize)");
-var configValueArg = new Argument<string>("value", "Configuration value");
-var configLocalOption = new Option<bool>("--local", "Force local configuration (in .omap folder near solution/project)");
+var configKeyArg = new Argument<string>("key") { Description = "Configuration key (locale, namespace, database, type, entity-mode, context, no-pluralize)" };
+var configValueArg = new Argument<string>("value") { Description = "Configuration value" };
+var configLocalOption = new Option<bool>("--local") { Description = "Force local configuration (in .omap folder near solution/project)" };
 
-configSetCommand.AddArgument(configKeyArg);
-configSetCommand.AddArgument(configValueArg);
-configSetCommand.AddOption(configLocalOption);
+configSetCommand.Arguments.Add(configKeyArg);
+configSetCommand.Arguments.Add(configValueArg);
+configSetCommand.Options.Add(configLocalOption);
 
-configSetCommand.SetHandler((string key, string value, bool local) =>
+configSetCommand.SetAction((parseResult) =>
 {
+    var key = parseResult.GetValue(configKeyArg)!;
+    var value = parseResult.GetValue(configValueArg)!;
+    var local = parseResult.GetValue(configLocalOption);
+    
     var (success, path) = ConfigurationService.SetConfigValue(key, value, local);
     if (success)
     {
@@ -41,18 +44,21 @@ configSetCommand.SetHandler((string key, string value, bool local) =>
     {
         Console.Error.WriteLine($"Failed to set configuration: {path}");
     }
-}, configKeyArg, configValueArg, configLocalOption);
+});
 
 // Config unset command
 var configUnsetCommand = new Command("unset", "Remove a configuration value");
-var configUnsetKeyArg = new Argument<string>("key", "Configuration key to remove");
-var configUnsetLocalOption = new Option<bool>("--local", "Remove from local configuration");
+var configUnsetKeyArg = new Argument<string>("key") { Description = "Configuration key to remove" };
+var configUnsetLocalOption = new Option<bool>("--local") { Description = "Remove from local configuration" };
 
-configUnsetCommand.AddArgument(configUnsetKeyArg);
-configUnsetCommand.AddOption(configUnsetLocalOption);
+configUnsetCommand.Arguments.Add(configUnsetKeyArg);
+configUnsetCommand.Options.Add(configUnsetLocalOption);
 
-configUnsetCommand.SetHandler((string key, bool local) =>
+configUnsetCommand.SetAction((parseResult) =>
 {
+    var key = parseResult.GetValue(configUnsetKeyArg)!;
+    var local = parseResult.GetValue(configUnsetLocalOption);
+    
     var (success, path) = ConfigurationService.UnsetConfigValue(key, local);
     if (success)
     {
@@ -63,11 +69,11 @@ configUnsetCommand.SetHandler((string key, bool local) =>
     {
         Console.Error.WriteLine($"Failed to unset configuration: {path}");
     }
-}, configUnsetKeyArg, configUnsetLocalOption);
+});
 
 // Config list command
 var configListCommand = new Command("list", "List all configuration values");
-configListCommand.SetHandler(() =>
+configListCommand.SetAction((_) =>
 {
     Console.WriteLine("omap Configuration");
     Console.WriteLine("==================");
@@ -90,14 +96,17 @@ configListCommand.SetHandler(() =>
 
 // Config path command
 var configPathCommand = new Command("path", "Show configuration file paths");
-var configPathLocalOption = new Option<bool>("--local", "Show local configuration path");
-var configPathGlobalOption = new Option<bool>("--global", "Show global configuration path");
+var configPathLocalOption = new Option<bool>("--local") { Description = "Show local configuration path" };
+var configPathGlobalOption = new Option<bool>("--global") { Description = "Show global configuration path" };
 
-configPathCommand.AddOption(configPathLocalOption);
-configPathCommand.AddOption(configPathGlobalOption);
+configPathCommand.Options.Add(configPathLocalOption);
+configPathCommand.Options.Add(configPathGlobalOption);
 
-configPathCommand.SetHandler((bool local, bool global) =>
+configPathCommand.SetAction((parseResult) =>
 {
+    var local = parseResult.GetValue(configPathLocalOption);
+    var global = parseResult.GetValue(configPathGlobalOption);
+    
     if (local || (!local && !global))
     {
         Console.WriteLine($"Local:  {ConfigurationService.GetLocalConfigPath()}");
@@ -106,188 +115,191 @@ configPathCommand.SetHandler((bool local, bool global) =>
     {
         Console.WriteLine($"Global: {ConfigurationService.GlobalConfigPath}");
     }
-}, configPathLocalOption, configPathGlobalOption);
+});
 
-configCommand.AddCommand(configSetCommand);
-configCommand.AddCommand(configUnsetCommand);
-configCommand.AddCommand(configListCommand);
-configCommand.AddCommand(configPathCommand);
+configCommand.Subcommands.Add(configSetCommand);
+configCommand.Subcommands.Add(configUnsetCommand);
+configCommand.Subcommands.Add(configListCommand);
+configCommand.Subcommands.Add(configPathCommand);
 
-rootCommand.AddCommand(configCommand);
+rootCommand.Subcommands.Add(configCommand);
 
 // ============================================
 // Main generate command options
 // ============================================
 
 // Define options - CSV file is now optional
-var schemaFileOption = new Argument<FileInfo?>(
-    name: "csv",
-    description: "CSV file with schema information (optional if using --connection-string)",
-    getDefaultValue: () => null)
+var schemaFileArg = new Argument<FileInfo?>("csv")
 {
-    Arity = ArgumentArity.ZeroOrOne
+    Description = "CSV file with schema information (optional if using --connection-string)",
+    Arity = ArgumentArity.ZeroOrOne,
+    DefaultValueFactory = _ => null
 };
 
 // Connection string option (alternative to CSV)
-var connectionStringOption = new Option<string?>(
-    aliases: ["--connection-string", "--cs"],
-    description: "Database connection string (alternative to CSV files). Schema will be extracted directly from the database.")
+var connectionStringOption = new Option<string?>("--connection-string", "--cs")
 {
-    IsRequired = false
+    Description = "Database connection string (alternative to CSV files). Schema will be extracted directly from the database."
 };
 
 // Schema filter for connection string mode
-var schemaFilterOption = new Option<string?>(
-    aliases: ["--schema", "-s"],
-    description: "Database schema to extract (e.g., 'public' for PostgreSQL, 'dbo' for SQL Server). Used with --connection-string.")
+var schemaFilterOption = new Option<string?>("--schema", "-s")
 {
-    IsRequired = false
+    Description = "Database schema to extract (e.g., 'public' for PostgreSQL, 'dbo' for SQL Server). Used with --connection-string."
 };
 
-var mappingTypeOption = new Option<string>(
-    aliases: ["-t", "--type"],
-    description: "Type of mapping to generate")
+var mappingTypeOption = new Option<string>("--type", "-t")
 {
-    IsRequired = true
+    Description = "Type of mapping to generate",
+    Required = true
 };
-mappingTypeOption.AddValidator(result =>
+mappingTypeOption.Validators.Add(result =>
 {
-    var value = result.GetValueOrDefault<string>();
+    var value = result.GetValue(mappingTypeOption);
     if (value != null && !value.Equals("efcore", StringComparison.OrdinalIgnoreCase) && 
         !value.Equals("dapper", StringComparison.OrdinalIgnoreCase))
     {
-        result.ErrorMessage = "Mapping type must be 'efcore' or 'dapper'";
+        result.AddError("Mapping type must be 'efcore' or 'dapper'");
     }
 });
 
-var databaseTypeOption = new Option<string?>(
-    aliases: ["-d", "--database"],
-    description: "Database type (mysql, postgre, sqlserver, oracle, sqlite). Auto-detected when using --connection-string.")
+var databaseTypeOption = new Option<string?>("--database", "-d")
 {
-    IsRequired = false
+    Description = "Database type (mysql, postgre, sqlserver, oracle, sqlite). Auto-detected when using --connection-string."
 };
-databaseTypeOption.AddValidator(result =>
+databaseTypeOption.Validators.Add(result =>
 {
-    var value = result.GetValueOrDefault<string>();
+    var value = result.GetValue(databaseTypeOption);
     var validTypes = new[] { "mysql", "postgre", "postgresql", "sqlserver", "mssql", "oracle", "sqlite" };
     if (value != null && !validTypes.Contains(value.ToLowerInvariant()))
     {
-        result.ErrorMessage = $"Database type must be one of: {string.Join(", ", validTypes)}";
+        result.AddError($"Database type must be one of: {string.Join(", ", validTypes)}");
     }
 });
 
-var relationshipsFileOption = new Option<FileInfo?>(
-    aliases: ["-f", "--foreignkeys"],
-    description: "CSV file with relationships (columns: name, schema_from, schema_to, table_from, table_to, key, foreign)")
+var relationshipsFileOption = new Option<FileInfo?>("--foreignkeys", "-f")
 {
-    IsRequired = false
+    Description = "CSV file with relationships (columns: name, schema_from, schema_to, table_from, table_to, key, foreign)"
 };
 
-var indexesFileOption = new Option<FileInfo?>(
-    aliases: ["-i", "--indexes"],
-    description: "CSV file with indexes (columns: schema, table, name, key, type)")
+var indexesFileOption = new Option<FileInfo?>("--indexes", "-i")
 {
-    IsRequired = false
+    Description = "CSV file with indexes (columns: schema, table, name, key, type)"
 };
 
-var outputDirOption = new Option<DirectoryInfo>(
-    aliases: ["-o", "--output"],
-    description: "Output directory for generated files",
-    getDefaultValue: () => new DirectoryInfo(Directory.GetCurrentDirectory()));
-
-var namespaceOption = new Option<string>(
-    aliases: ["-n", "--namespace"],
-    description: "Namespace for generated classes",
-    getDefaultValue: () => config.Namespace ?? "Generated");
-
-var contextNameOption = new Option<string>(
-    aliases: ["-c", "--context"],
-    description: "Name of the database context class",
-    getDefaultValue: () => config.Context ?? "AppDbContext");
-
-var entityModeOption = new Option<string>(
-    aliases: ["-e", "--entity-mode"],
-    description: "Entity generation mode: class|cls (default), record|rec, struct|str, record_struct|rtr",
-    getDefaultValue: () => config.EntityMode ?? "class");
-entityModeOption.AddValidator(result =>
+var outputDirOption = new Option<DirectoryInfo>("--output", "-o")
 {
-    var value = result.GetValueOrDefault<string>();
+    Description = "Output directory for generated files",
+    DefaultValueFactory = _ => new DirectoryInfo(Directory.GetCurrentDirectory())
+};
+
+var namespaceOption = new Option<string>("--namespace", "-n")
+{
+    Description = "Namespace for generated classes",
+    DefaultValueFactory = _ => config.Namespace ?? "Generated"
+};
+
+var contextNameOption = new Option<string>("--context", "-c")
+{
+    Description = "Name of the database context class",
+    DefaultValueFactory = _ => config.Context ?? "AppDbContext"
+};
+
+var entityModeOption = new Option<string>("--entity-mode", "-e")
+{
+    Description = "Entity generation mode: class|cls (default), record|rec, struct|str, record_struct|rtr",
+    DefaultValueFactory = _ => config.EntityMode ?? "class"
+};
+entityModeOption.Validators.Add(result =>
+{
+    var value = result.GetValue(entityModeOption);
     var validModes = new[] { "class", "cls", "record", "rec", "struct", "str", "record_struct", "rtr" };
     if (value != null && !validModes.Contains(value.ToLowerInvariant()))
     {
-        result.ErrorMessage = $"Entity mode must be one of: {string.Join(", ", validModes)}";
+        result.AddError($"Entity mode must be one of: {string.Join(", ", validModes)}");
     }
 });
 
-var localeOption = new Option<string>(
-    aliases: ["-l", "--locale"],
-    description: $"Locale for pluralization ({string.Join(", ", PluralizerService.SupportedLocales.Take(10))}...)",
-    getDefaultValue: () => config.Locale ?? "en-us");
-localeOption.AddValidator(result =>
+var localeOption = new Option<string>("--locale", "-l")
 {
-    var value = result.GetValueOrDefault<string>();
+    Description = $"Locale for pluralization ({string.Join(", ", PluralizerService.SupportedLocales.Take(10))}...)",
+    DefaultValueFactory = _ => config.Locale ?? "en-us"
+};
+localeOption.Validators.Add(result =>
+{
+    var value = result.GetValue(localeOption);
     if (value != null && !PluralizerService.SupportedLocales.Contains(value.ToLowerInvariant().Replace('_', '-')))
     {
-        result.ErrorMessage = $"Locale must be one of: {string.Join(", ", PluralizerService.SupportedLocales)}";
+        result.AddError($"Locale must be one of: {string.Join(", ", PluralizerService.SupportedLocales)}");
     }
 });
 
-var noPluralizeOption = new Option<bool>(
-    aliases: ["--no-pluralize"],
-    description: "Disable pluralization/singularization",
-    getDefaultValue: () => config.NoPluralizer);
+var noPluralizeOption = new Option<bool>("--no-pluralize")
+{
+    Description = "Disable pluralization/singularization",
+    DefaultValueFactory = _ => config.NoPluralizer
+};
 
 // Add validation for required inputs
-rootCommand.AddValidator(result =>
+rootCommand.Validators.Add(result =>
 {
-    var csvFile = result.GetValueForArgument(schemaFileOption);
-    var connString = result.GetValueForOption(connectionStringOption);
-    var dbType = result.GetValueForOption(databaseTypeOption);
+    var csvFile = result.GetValue(schemaFileArg);
+    var connString = result.GetValue(connectionStringOption);
+    var dbType = result.GetValue(databaseTypeOption);
     
     // Must have either CSV file or connection string
     if (csvFile == null && string.IsNullOrEmpty(connString))
     {
-        result.ErrorMessage = "Either a CSV file or --connection-string must be provided.";
+        result.AddError("Either a CSV file or --connection-string must be provided.");
         return;
     }
     
     // If using CSV, database type is required
     if (csvFile != null && string.IsNullOrEmpty(connString) && string.IsNullOrEmpty(dbType))
     {
-        result.ErrorMessage = "Database type (-d/--database) is required when using CSV files.";
+        result.AddError("Database type (-d/--database) is required when using CSV files.");
     }
 });
 
 // Add options to root command
-rootCommand.AddArgument(schemaFileOption);
-rootCommand.AddOption(connectionStringOption);
-rootCommand.AddOption(schemaFilterOption);
-rootCommand.AddOption(mappingTypeOption);
-rootCommand.AddOption(databaseTypeOption);
-rootCommand.AddOption(relationshipsFileOption);
-rootCommand.AddOption(indexesFileOption);
-rootCommand.AddOption(outputDirOption);
-rootCommand.AddOption(namespaceOption);
-rootCommand.AddOption(contextNameOption);
-rootCommand.AddOption(entityModeOption);
-rootCommand.AddOption(localeOption);
-rootCommand.AddOption(noPluralizeOption);
-
-// Create binder for options
-var optionsBinder = new CommandOptionsBinder(
-    schemaFileOption, connectionStringOption, schemaFilterOption,
-    mappingTypeOption, databaseTypeOption,
-    relationshipsFileOption, indexesFileOption, outputDirOption,
-    namespaceOption, contextNameOption, entityModeOption,
-    localeOption, noPluralizeOption);
+rootCommand.Arguments.Add(schemaFileArg);
+rootCommand.Options.Add(connectionStringOption);
+rootCommand.Options.Add(schemaFilterOption);
+rootCommand.Options.Add(mappingTypeOption);
+rootCommand.Options.Add(databaseTypeOption);
+rootCommand.Options.Add(relationshipsFileOption);
+rootCommand.Options.Add(indexesFileOption);
+rootCommand.Options.Add(outputDirOption);
+rootCommand.Options.Add(namespaceOption);
+rootCommand.Options.Add(contextNameOption);
+rootCommand.Options.Add(entityModeOption);
+rootCommand.Options.Add(localeOption);
+rootCommand.Options.Add(noPluralizeOption);
 
 // Set handler
-rootCommand.SetHandler(async (CommandOptions options) =>
+rootCommand.SetAction(async (parseResult, cancellationToken) =>
 {
-    await ExecuteAsync(options);
-}, optionsBinder);
+    var options = new CommandOptions
+    {
+        SchemaFile = parseResult.GetValue(schemaFileArg),
+        ConnectionString = parseResult.GetValue(connectionStringOption),
+        SchemaFilter = parseResult.GetValue(schemaFilterOption),
+        MappingType = parseResult.GetValue(mappingTypeOption)!,
+        DatabaseType = parseResult.GetValue(databaseTypeOption) ?? string.Empty,
+        RelationshipsFile = parseResult.GetValue(relationshipsFileOption),
+        IndexesFile = parseResult.GetValue(indexesFileOption),
+        OutputDir = parseResult.GetValue(outputDirOption)!,
+        Namespace = parseResult.GetValue(namespaceOption)!,
+        ContextName = parseResult.GetValue(contextNameOption)!,
+        EntityMode = parseResult.GetValue(entityModeOption)!,
+        Locale = parseResult.GetValue(localeOption)!,
+        NoPluralizer = parseResult.GetValue(noPluralizeOption)
+    };
 
-return await rootCommand.InvokeAsync(args);
+    await ExecuteAsync(options);
+});
+
+return await rootCommand.Parse(args).InvokeAsync();
 
 static async Task ExecuteAsync(CommandOptions options)
 {
@@ -531,74 +543,4 @@ static EntityTypeMode ParseEntityTypeMode(string entityMode)
         "record_struct" or "rtr" => EntityTypeMode.RecordStruct,
         _ => EntityTypeMode.Class
     };
-}
-
-/// <summary>
-/// Binder for command options.
-/// </summary>
-sealed class CommandOptionsBinder : BinderBase<CommandOptions>
-{
-    private readonly Argument<FileInfo?> _schemaFile;
-    private readonly Option<string?> _connectionString;
-    private readonly Option<string?> _schemaFilter;
-    private readonly Option<string> _mappingType;
-    private readonly Option<string?> _databaseType;
-    private readonly Option<FileInfo?> _relationshipsFile;
-    private readonly Option<FileInfo?> _indexesFile;
-    private readonly Option<DirectoryInfo> _outputDir;
-    private readonly Option<string> _namespace;
-    private readonly Option<string> _contextName;
-    private readonly Option<string> _entityMode;
-    private readonly Option<string> _locale;
-    private readonly Option<bool> _noPluralizer;
-
-    public CommandOptionsBinder(
-        Argument<FileInfo?> schemaFile,
-        Option<string?> connectionString,
-        Option<string?> schemaFilter,
-        Option<string> mappingType,
-        Option<string?> databaseType,
-        Option<FileInfo?> relationshipsFile,
-        Option<FileInfo?> indexesFile,
-        Option<DirectoryInfo> outputDir,
-        Option<string> @namespace,
-        Option<string> contextName,
-        Option<string> entityMode,
-        Option<string> locale,
-        Option<bool> noPluralizer)
-    {
-        _schemaFile = schemaFile;
-        _connectionString = connectionString;
-        _schemaFilter = schemaFilter;
-        _mappingType = mappingType;
-        _databaseType = databaseType;
-        _relationshipsFile = relationshipsFile;
-        _indexesFile = indexesFile;
-        _outputDir = outputDir;
-        _namespace = @namespace;
-        _contextName = contextName;
-        _entityMode = entityMode;
-        _locale = locale;
-        _noPluralizer = noPluralizer;
-    }
-
-    protected override CommandOptions GetBoundValue(BindingContext bindingContext)
-    {
-        return new CommandOptions
-        {
-            SchemaFile = bindingContext.ParseResult.GetValueForArgument(_schemaFile),
-            ConnectionString = bindingContext.ParseResult.GetValueForOption(_connectionString),
-            SchemaFilter = bindingContext.ParseResult.GetValueForOption(_schemaFilter),
-            MappingType = bindingContext.ParseResult.GetValueForOption(_mappingType)!,
-            DatabaseType = bindingContext.ParseResult.GetValueForOption(_databaseType) ?? string.Empty,
-            RelationshipsFile = bindingContext.ParseResult.GetValueForOption(_relationshipsFile),
-            IndexesFile = bindingContext.ParseResult.GetValueForOption(_indexesFile),
-            OutputDir = bindingContext.ParseResult.GetValueForOption(_outputDir)!,
-            Namespace = bindingContext.ParseResult.GetValueForOption(_namespace)!,
-            ContextName = bindingContext.ParseResult.GetValueForOption(_contextName)!,
-            EntityMode = bindingContext.ParseResult.GetValueForOption(_entityMode)!,
-            Locale = bindingContext.ParseResult.GetValueForOption(_locale)!,
-            NoPluralizer = bindingContext.ParseResult.GetValueForOption(_noPluralizer)
-        };
-    }
 }

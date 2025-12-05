@@ -1,0 +1,68 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  DOTNET_VERSION: '9.0.x'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  release:
+    name: Build and Publish
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        
+    - name: Get version from tag
+      id: get_version
+      run: |
+        TAG=${GITHUB_REF#refs/tags/v}
+        # Parse version components
+        if [[ $TAG == *-* ]]; then
+          VERSION_PREFIX=$(echo $TAG | cut -d'-' -f1)
+          VERSION_SUFFIX=$(echo $TAG | cut -d'-' -f2-)
+        else
+          VERSION_PREFIX=$TAG
+          VERSION_SUFFIX=""
+        fi
+        echo "VERSION_PREFIX=$VERSION_PREFIX" >> $GITHUB_OUTPUT
+        echo "VERSION_SUFFIX=$VERSION_SUFFIX" >> $GITHUB_OUTPUT
+        echo "FULL_VERSION=$TAG" >> $GITHUB_OUTPUT
+        
+    - name: Restore dependencies
+      run: dotnet restore
+      
+    - name: Build
+      run: dotnet build --no-restore --configuration Release -p:VersionPrefix=${{ steps.get_version.outputs.VERSION_PREFIX }} -p:VersionSuffix=${{ steps.get_version.outputs.VERSION_SUFFIX }}
+      
+    - name: Run Tests
+      run: dotnet test --no-build --configuration Release --verbosity normal
+      
+    - name: Pack
+      run: dotnet pack src/ObjMapper/ObjMapper.csproj --no-build --configuration Release -p:VersionPrefix=${{ steps.get_version.outputs.VERSION_PREFIX }} -p:VersionSuffix=${{ steps.get_version.outputs.VERSION_SUFFIX }} -o ./nupkg
+      
+    - name: Push to NuGet
+      run: dotnet nuget push ./nupkg/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+      if: ${{ secrets.NUGET_API_KEY != '' }}
+      
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ./nupkg/*.nupkg
+        generate_release_notes: true
+        prerelease: ${{ contains(steps.get_version.outputs.FULL_VERSION, '-') }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

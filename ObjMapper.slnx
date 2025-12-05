@@ -4,5 +4,6 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/ObjMapper.Tests/ObjMapper.Tests.csproj" />
+    <Project Path="tests/ObjMapper.IntegrationTests/ObjMapper.IntegrationTests.csproj" />
   </Folder>
 </Solution>

@@ -1,0 +1,3 @@
+name,schema_from,schema_to,table_from,table_to,key,foreign
+fk_orders_users,public,public,orders,users,id,user_id
+fk_order_items_orders,public,public,order_items,orders,id,order_id

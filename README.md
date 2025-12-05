@@ -1,2 +1,287 @@
-# obj-mapper
-Database reverse engineering dotnet tool
+# omap
+
+Database reverse engineering dotnet tool - generates entity mappings from CSV schema files for EF Core and Dapper.
+
+## Installation
+
+```bash
+dotnet tool install --global ObjMapper
+```
+
+Or install as a local tool:
+
+```bash
+dotnet new tool-manifest
+dotnet tool install ObjMapper
+```
+
+## Usage
+
+The tool supports two modes of operation:
+
+### Mode 1: CSV Files
+```bash
+omap <csv-file> -t <mapping-type> -d <database-type> [options]
+```
+
+### Mode 2: Database Connection
+```bash
+omap --connection-string "<connection-string>" -t <mapping-type> [options]
+```
+
+When using a connection string, the schema is extracted directly from the database, eliminating the need for CSV files. The database type is auto-detected from the connection string.
+
+### Arguments
+
+- `csv`: CSV file with schema information (optional if using --connection-string)
+  - Columns: `schema`, `table`, `column`, `nullable`, `type`, `comment`
+
+### Options
+
+- `--connection-string, --cs`: Database connection string (alternative to CSV files)
+  - Schema will be extracted directly from the database
+  - Database type is auto-detected when possible
+
+- `-s, --schema`: Database schema to extract (optional, used with --connection-string)
+  - Default: `public` for PostgreSQL, `dbo` for SQL Server, database name for MySQL
+
+- `-t, --type`: Type of mapping to generate (required)
+  - `efcore`: Entity Framework Core entities and configurations
+  - `dapper`: Dapper entities and repositories
+
+- `-d, --database`: Database type (required for CSV mode, auto-detected for connection string mode)
+  - `mysql`: MySQL
+  - `postgre` or `postgresql`: PostgreSQL
+  - `sqlserver` or `mssql`: SQL Server
+  - `oracle`: Oracle
+  - `sqlite`: SQLite
+
+- `-f, --foreignkeys`: CSV file with relationships (optional)
+  - Columns: `name`, `schema_from`, `schema_to`, `table_from`, `table_to`, `key`, `foreign`
+  - Supports composite keys (comma-separated in `key` and `foreign` columns)
+  - Supports cross-schema relationships
+
+- `-i, --indexes`: CSV file with indexes (optional)
+  - Columns: `schema`, `table`, `name`, `key`, `type`
+  - Supports composite indexes (comma-separated in `key` column)
+  - Type can be: `unique`, `btree`, `hash`, `fulltext`, etc.
+
+- `-o, --output`: Output directory for generated files (default: current directory)
+
+- `-n, --namespace`: Namespace for generated classes (default: `Generated`)
+
+- `-c, --context`: Name of the database context class (default: `AppDbContext`)
+
+- `-e, --entity-mode`: Entity generation mode (default: `class`)
+  - `class` or `cls`: Generate as classes
+  - `record` or `rec`: Generate as records
+  - `struct` or `str`: Generate as structs
+  - `record_struct` or `rtr`: Generate as record structs
+
+- `-l, --locale`: Locale for pluralization (default: `en-us`)
+  - Supported locales: `en-us`, `en-gb`, `en`, `pt-br`, `pt-pt`, `pt`, `es-es`, `es-mx`, `es`, `fr-fr`, `fr-ca`, `fr`, `de-de`, `de`, `it-it`, `it`, `nl-nl`, `nl`, `ru-ru`, `ru`, `pl-pl`, `pl`, `tr-tr`, `tr`, `ja-jp`, `ja`, `ko-kr`, `ko`, `zh-cn`, `zh-tw`, `zh`
+
+- `--no-pluralize`: Disable pluralization/singularization
+
+## Configuration
+
+The tool supports configuration files at two levels:
+
+### Global Configuration
+
+Located at `~/.omap/config.json`. Created automatically on first run.
+
+```json
+{
+  "locale": "en-us",
+  "noPluralizer": false,
+  "namespace": "MyApp.Data",
+  "database": "postgresql",
+  "type": "efcore",
+  "entityMode": "class",
+  "context": "AppDbContext"
+}
+```
+
+### Local Configuration
+
+Place a `.omap/config.json` file in your project directory (or any parent directory). Local settings override global settings.
+
+### Priority
+
+Settings are applied in this order (later overrides earlier):
+1. Default values
+2. Global configuration (`~/.omap/config.json`)
+3. Local configuration (`.omap/config.json` found recursively)
+4. Command-line arguments
+
+### Configuration Commands
+
+```bash
+# Set a configuration value (global by default)
+omap config set locale pt-br
+omap config set namespace MyApp.Data
+omap config set database postgresql
+
+# Set a local configuration value
+omap config set locale pt-br --local
+
+# Remove a configuration value
+omap config unset namespace
+omap config unset namespace --local
+
+# List all configuration values
+omap config list
+
+# Show configuration file paths
+omap config path
+omap config path --local
+omap config path --global
+```
+
+Available configuration keys:
+- `locale` / `l` - Locale for pluralization
+- `namespace` / `n` - Namespace for generated classes
+- `database` / `d` - Database type
+- `type` / `t` - Mapping type (efcore/dapper)
+- `entity-mode` / `e` - Entity generation mode
+- `context` / `c` - Database context name
+- `no-pluralize` - Disable pluralization (true/false)
+
+## Examples
+
+### Generate EF Core mappings from CSV
+
+```bash
+omap schema.csv -t efcore -d postgresql -o ./Generated -n MyApp.Data
+```
+
+### Generate from database connection
+
+```bash
+# PostgreSQL
+omap --cs "Host=localhost;Database=mydb;Username=user;Password=pass" -t efcore -o ./Generated
+
+# MySQL
+omap --cs "Server=localhost;Database=mydb;User=user;Password=pass" -t dapper -o ./Generated
+
+# SQL Server
+omap --cs "Server=localhost;Database=mydb;User Id=user;Password=pass;TrustServerCertificate=True" -t efcore -o ./Generated
+
+# SQLite
+omap --cs "Data Source=mydb.sqlite" -t efcore -o ./Generated
+
+# With schema filter
+omap --cs "Host=localhost;Database=mydb;Username=user;Password=pass" -t efcore -s sales -o ./Generated
+```
+
+### Generate Dapper mappings with relationships and indexes
+
+```bash
+omap schema.csv -t dapper -d mysql -f relationships.csv -i indexes.csv -o ./Generated -n MyApp.Data -c MyDbContext
+```
+
+### Generate as records
+
+```bash
+omap schema.csv -t efcore -d sqlserver -e record -o ./Generated -n MyApp.Data
+```
+
+### Use Portuguese pluralization
+
+```bash
+omap schema.csv -t efcore -d postgresql -l pt-br -o ./Generated -n MyApp.Data
+```
+
+### Disable pluralization
+
+```bash
+omap schema.csv -t efcore -d postgresql --no-pluralize -o ./Generated -n MyApp.Data
+```
+
+## CSV File Formats
+
+### Schema CSV (schema.csv)
+
+```csv
+schema,table,column,nullable,type,comment
+public,users,id,false,int,Primary key
+public,users,name,false,varchar(100),User name
+public,users,email,true,varchar(255),Email address
+public,users,created_at,false,timestamp,Creation timestamp
+public,orders,id,false,int,Primary key
+public,orders,user_id,false,int,Foreign key to users
+public,orders,total,false,decimal(10,2),Order total
+```
+
+### Relationships CSV (relationships.csv)
+
+```csv
+name,schema_from,schema_to,table_from,table_to,key,foreign
+fk_orders_users,public,public,orders,users,id,user_id
+```
+
+For composite keys:
+
+```csv
+name,schema_from,schema_to,table_from,table_to,key,foreign
+fk_composite,public,public,order_items,orders,"order_id,product_id","order_id,product_id"
+```
+
+### Indexes CSV (indexes.csv)
+
+```csv
+schema,table,name,key,type
+public,users,idx_users_email,email,unique
+public,orders,idx_orders_user_id,user_id,btree
+```
+
+## Output Structure
+
+The tool generates the following files (all types are `partial`):
+
+```
+output/
+├── Entities/
+│   ├── User.cs
+│   └── Order.cs
+├── Configurations/
+│   ├── UserConfiguration.cs      # EF Core only
+│   ├── OrderConfiguration.cs     # EF Core only
+│   ├── UserRepository.cs         # Dapper only
+│   └── OrderRepository.cs        # Dapper only
+└── AppDbContext.cs
+```
+
+## Pluralization
+
+The tool supports pluralization and singularization in multiple languages:
+
+| Language | Locales |
+|----------|---------|
+| English | `en-us`, `en-gb`, `en` |
+| Portuguese | `pt-br`, `pt-pt`, `pt` |
+| Spanish | `es-es`, `es-mx`, `es` |
+| French | `fr-fr`, `fr-ca`, `fr` |
+| German | `de-de`, `de` |
+| Italian | `it-it`, `it` |
+| Dutch | `nl-nl`, `nl` |
+| Russian | `ru-ru`, `ru` |
+| Polish | `pl-pl`, `pl` |
+| Turkish | `tr-tr`, `tr` |
+| Japanese | `ja-jp`, `ja` |
+| Korean | `ko-kr`, `ko` |
+| Chinese | `zh-cn`, `zh-tw`, `zh` |
+
+Note: Japanese, Korean, and Chinese don't typically have plural forms, so pluralization is disabled for these languages.
+
+## Versioning
+
+The tool uses semantic versioning with support for preview versions:
+- Release: `1.0.0`
+- Beta: `1.0.0-beta1`
+- Release Candidate: `1.0.0-rc1`
+
+## License
+
+MIT License - see [LICENSE](LICENSE) for details.

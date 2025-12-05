@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ObjMapper/ObjMapper.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ObjMapper.Tests/ObjMapper.Tests.csproj" />
+    <Project Path="tests/ObjMapper.IntegrationTests/ObjMapper.IntegrationTests.csproj" />
+  </Folder>
+</Solution>

@@ -224,10 +224,12 @@ public class PluralizerService
 
         // Handle words ending in l
         if (word.EndsWith("al", StringComparison.OrdinalIgnoreCase) ||
-            word.EndsWith("el", StringComparison.OrdinalIgnoreCase) ||
             word.EndsWith("ol", StringComparison.OrdinalIgnoreCase) ||
             word.EndsWith("ul", StringComparison.OrdinalIgnoreCase))
             return word[..^1] + "is";
+
+        if (word.EndsWith("el", StringComparison.OrdinalIgnoreCase))
+            return word[..^2] + "éis";
 
         if (word.EndsWith("il", StringComparison.OrdinalIgnoreCase))
             return word[..^2] + "is";
@@ -335,17 +337,15 @@ public class PluralizerService
 
     private static string SingularizeGerman(string word)
     {
-        // German plural forms are complex - simplified approach
-        if (word.EndsWith("en", StringComparison.OrdinalIgnoreCase))
+        // German plural forms are complex - use conservative approach
+        // Only handle clear patterns to avoid false positives
+        
+        // Words ending in -nen (like Studentinnen -> Studentin)
+        if (word.EndsWith("nen", StringComparison.OrdinalIgnoreCase) && word.Length > 5)
             return word[..^2];
 
-        if (word.EndsWith("er", StringComparison.OrdinalIgnoreCase))
-            return word[..^2];
-
-        if (word.EndsWith("e", StringComparison.OrdinalIgnoreCase))
-            return word[..^1];
-
-        if (word.EndsWith("s", StringComparison.OrdinalIgnoreCase))
+        // Foreign words ending in -s (like Autos -> Auto)
+        if (word.EndsWith("s", StringComparison.OrdinalIgnoreCase) && word.Length > 3)
             return word[..^1];
 
         return word;
@@ -353,14 +353,21 @@ public class PluralizerService
 
     private static string PluralizeGerman(string word)
     {
-        // German pluralization is complex - simplified rules
+        // German pluralization is complex - simplified rules for common patterns
+        // Words ending in -e often add -n
         if (word.EndsWith("e", StringComparison.OrdinalIgnoreCase))
             return word + "n";
 
+        // Words already ending in typical plural markers remain unchanged
         if (word.EndsWith("er", StringComparison.OrdinalIgnoreCase) ||
             word.EndsWith("en", StringComparison.OrdinalIgnoreCase) ||
             word.EndsWith("el", StringComparison.OrdinalIgnoreCase))
             return word;
+
+        // Foreign words add -s
+        if (word.EndsWith("o", StringComparison.OrdinalIgnoreCase) ||
+            word.EndsWith("a", StringComparison.OrdinalIgnoreCase))
+            return word + "s";
 
         return word + "en";
     }
@@ -371,12 +378,16 @@ public class PluralizerService
 
     private static string SingularizeItalian(string word)
     {
-        if (word.EndsWith("i", StringComparison.OrdinalIgnoreCase))
-            return word[..^1] + "o";
+        // Italian singularization - only handle clear patterns
+        // Masculine plural -i -> singular -o (like libri -> libro)
+        if (word.EndsWith("i", StringComparison.OrdinalIgnoreCase) && word.Length > 2)
+        {
+            // Only apply if it looks like a masculine plural
+            var singular = word[..^1] + "o";
+            return singular;
+        }
 
-        if (word.EndsWith("e", StringComparison.OrdinalIgnoreCase))
-            return word[..^1] + "a";
-
+        // Feminine plural -e from -a is ambiguous, leave as is
         return word;
     }
 

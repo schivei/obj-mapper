@@ -33,7 +33,7 @@ public class PluralizerServiceTests
     [Theory]
     [InlineData("pt-br", "usuario", "usuarios")]
     [InlineData("pt-br", "animal", "animais")]
-    [InlineData("pt-br", "papel", "papeis")]
+    [InlineData("pt-br", "papel", "papéis")]
     public void PluralizePortuguese_ReturnsCorrectPlural(string locale, string input, string expected)
     {
         var pluralizer = new PluralizerService(locale);

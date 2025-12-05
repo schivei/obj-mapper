@@ -30,35 +30,56 @@ public static class SchemaExtractorFactory
     {
         var lowerConn = connectionString.ToLowerInvariant();
         
-        // SQLite detection
+        // SQLite detection - most specific first
         if (lowerConn.Contains("data source=") && 
             (lowerConn.Contains(".db") || lowerConn.Contains(".sqlite") || lowerConn.Contains(":memory:")))
         {
             return DatabaseType.Sqlite;
         }
         
-        // PostgreSQL detection
-        if (lowerConn.Contains("host=") && lowerConn.Contains("database=") && !lowerConn.Contains("server="))
+        // PostgreSQL detection - uses "host=" instead of "server="
+        if (lowerConn.Contains("host=") && !lowerConn.Contains("server="))
         {
             return DatabaseType.PostgreSql;
         }
         
-        // MySQL detection
-        if (lowerConn.Contains("server=") && lowerConn.Contains("database=") && !lowerConn.Contains("initial catalog"))
+        // SQL Server detection - check specific SQL Server patterns first
+        // SQL Server typically uses: "Server=", "Initial Catalog=", "User Id=", "Trusted_Connection=", 
+        // "Integrated Security=", "TrustServerCertificate=", "MultipleActiveResultSets="
+        if (lowerConn.Contains("server=") || lowerConn.Contains("data source="))
         {
-            return DatabaseType.MySql;
-        }
-        
-        // SQL Server detection
-        if (lowerConn.Contains("server=") && (lowerConn.Contains("initial catalog") || lowerConn.Contains("database=")))
-        {
-            // Check for SQL Server specific patterns
-            if (lowerConn.Contains("trusted_connection") || 
+            // SQL Server specific patterns
+            if (lowerConn.Contains("initial catalog") ||
+                lowerConn.Contains("trusted_connection") || 
                 lowerConn.Contains("integrated security") ||
                 lowerConn.Contains("trustservercertificate") ||
-                lowerConn.Contains("user id="))
+                lowerConn.Contains("multipleactiveresultsets") ||
+                lowerConn.Contains("user id=") ||
+                lowerConn.Contains("encrypt="))
             {
                 return DatabaseType.SqlServer;
+            }
+        }
+        
+        // MySQL detection - uses "server=" with "user=" (not "user id=")
+        if (lowerConn.Contains("server=") && lowerConn.Contains("database="))
+        {
+            // MySQL typically uses "user=" or "uid=" instead of "user id="
+            if (lowerConn.Contains("user=") && !lowerConn.Contains("user id="))
+            {
+                return DatabaseType.MySql;
+            }
+            // MySQL with uid parameter
+            if (lowerConn.Contains("uid="))
+            {
+                return DatabaseType.MySql;
+            }
+            // If no clear indicator, check for MySQL specific options
+            if (lowerConn.Contains("sslmode=") || 
+                lowerConn.Contains("charset=") ||
+                lowerConn.Contains("allowuservariables="))
+            {
+                return DatabaseType.MySql;
             }
         }
         

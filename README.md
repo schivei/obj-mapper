@@ -61,6 +61,43 @@ omap <csv-file> -t <mapping-type> -d <database-type> [options]
   - `struct` or `str`: Generate as structs
   - `record_struct` or `rtr`: Generate as record structs
 
+- `-l, --locale`: Locale for pluralization (default: `en-us`)
+  - Supported locales: `en-us`, `en-gb`, `en`, `pt-br`, `pt-pt`, `pt`, `es-es`, `es-mx`, `es`, `fr-fr`, `fr-ca`, `fr`, `de-de`, `de`, `it-it`, `it`, `nl-nl`, `nl`, `ru-ru`, `ru`, `pl-pl`, `pl`, `tr-tr`, `tr`, `ja-jp`, `ja`, `ko-kr`, `ko`, `zh-cn`, `zh-tw`, `zh`
+
+- `--no-pluralize`: Disable pluralization/singularization
+
+## Configuration
+
+The tool supports configuration files at two levels:
+
+### Global Configuration
+
+Located at `~/.omap/config.json`. Created automatically on first run.
+
+```json
+{
+  "locale": "en-us",
+  "noPluralizer": false,
+  "namespace": "MyApp.Data",
+  "database": "postgresql",
+  "type": "efcore",
+  "entityMode": "class",
+  "context": "AppDbContext"
+}
+```
+
+### Local Configuration
+
+Place a `.omap/config.json` file in your project directory (or any parent directory). Local settings override global settings.
+
+### Priority
+
+Settings are applied in this order (later overrides earlier):
+1. Default values
+2. Global configuration (`~/.omap/config.json`)
+3. Local configuration (`.omap/config.json` found recursively)
+4. Command-line arguments
+
 ## Examples
 
 ### Generate EF Core mappings
@@ -79,6 +116,18 @@ omap schema.csv -t dapper -d mysql -f relationships.csv -i indexes.csv -o ./Gene
 
 ```bash
 omap schema.csv -t efcore -d sqlserver -e record -o ./Generated -n MyApp.Data
+```
+
+### Use Portuguese pluralization
+
+```bash
+omap schema.csv -t efcore -d postgresql -l pt-br -o ./Generated -n MyApp.Data
+```
+
+### Disable pluralization
+
+```bash
+omap schema.csv -t efcore -d postgresql --no-pluralize -o ./Generated -n MyApp.Data
 ```
 
 ## CSV File Formats
@@ -134,6 +183,28 @@ output/
 │   └── OrderRepository.cs        # Dapper only
 └── AppDbContext.cs
 ```
+
+## Pluralization
+
+The tool supports pluralization and singularization in multiple languages:
+
+| Language | Locales |
+|----------|---------|
+| English | `en-us`, `en-gb`, `en` |
+| Portuguese | `pt-br`, `pt-pt`, `pt` |
+| Spanish | `es-es`, `es-mx`, `es` |
+| French | `fr-fr`, `fr-ca`, `fr` |
+| German | `de-de`, `de` |
+| Italian | `it-it`, `it` |
+| Dutch | `nl-nl`, `nl` |
+| Russian | `ru-ru`, `ru` |
+| Polish | `pl-pl`, `pl` |
+| Turkish | `tr-tr`, `tr` |
+| Japanese | `ja-jp`, `ja` |
+| Korean | `ko-kr`, `ko` |
+| Chinese | `zh-cn`, `zh-tw`, `zh` |
+
+Note: Japanese, Korean, and Chinese don't typically have plural forms, so pluralization is disabled for these languages.
 
 ## Versioning
 

@@ -8,6 +8,16 @@ namespace ObjMapper.Services;
 /// </summary>
 public static partial class NamingHelper
 {
+    private static PluralizerService _pluralizer = new("en-us", false);
+
+    /// <summary>
+    /// Configures the pluralizer with the specified locale and disabled state.
+    /// </summary>
+    public static void Configure(string locale, bool disabled)
+    {
+        _pluralizer = new PluralizerService(locale, disabled);
+    }
+
     /// <summary>
     /// Converts a database name to PascalCase class name.
     /// </summary>
@@ -60,7 +70,7 @@ public static partial class NamingHelper
     public static string ToEntityName(string tableName)
     {
         var pascalCase = ToPascalCase(tableName);
-        return Singularize(pascalCase);
+        return _pluralizer.Singularize(pascalCase);
     }
 
     /// <summary>
@@ -68,63 +78,7 @@ public static partial class NamingHelper
     /// </summary>
     public static string ToCollectionName(string entityName)
     {
-        return Pluralize(entityName);
-    }
-
-    /// <summary>
-    /// Simple singularization logic.
-    /// </summary>
-    private static string Singularize(string word)
-    {
-        if (string.IsNullOrEmpty(word) || word.Length < 2)
-            return word;
-
-        // Handle common plural endings
-        if (word.EndsWith("ies", StringComparison.OrdinalIgnoreCase))
-            return word[..^3] + "y";
-        
-        if (word.EndsWith("es", StringComparison.OrdinalIgnoreCase) && 
-            (word.EndsWith("sses", StringComparison.OrdinalIgnoreCase) ||
-             word.EndsWith("xes", StringComparison.OrdinalIgnoreCase) ||
-             word.EndsWith("ches", StringComparison.OrdinalIgnoreCase) ||
-             word.EndsWith("shes", StringComparison.OrdinalIgnoreCase)))
-            return word[..^2];
-        
-        if (word.EndsWith("s", StringComparison.OrdinalIgnoreCase) && 
-            !word.EndsWith("ss", StringComparison.OrdinalIgnoreCase))
-            return word[..^1];
-
-        return word;
-    }
-
-    /// <summary>
-    /// Simple pluralization logic.
-    /// </summary>
-    private static string Pluralize(string word)
-    {
-        if (string.IsNullOrEmpty(word))
-            return word;
-
-        if (word.EndsWith("y", StringComparison.OrdinalIgnoreCase) && 
-            !EndsWithVowelPlusY(word))
-            return word[..^1] + "ies";
-        
-        if (word.EndsWith("s", StringComparison.OrdinalIgnoreCase) ||
-            word.EndsWith("x", StringComparison.OrdinalIgnoreCase) ||
-            word.EndsWith("ch", StringComparison.OrdinalIgnoreCase) ||
-            word.EndsWith("sh", StringComparison.OrdinalIgnoreCase))
-            return word + "es";
-
-        return word + "s";
-    }
-
-    private static bool EndsWithVowelPlusY(string word)
-    {
-        if (word.Length < 2)
-            return false;
-        
-        var secondToLast = char.ToLowerInvariant(word[^2]);
-        return secondToLast is 'a' or 'e' or 'i' or 'o' or 'u';
+        return _pluralizer.Pluralize(entityName);
     }
 
     private static string[] SplitWords(string name)

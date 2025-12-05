@@ -3,6 +3,13 @@ using System.CommandLine.Binding;
 using ObjMapper.Generators;
 using ObjMapper.Models;
 using ObjMapper.Parsers;
+using ObjMapper.Services;
+
+// Ensure global config exists
+ConfigurationService.EnsureGlobalConfigExists();
+
+// Load effective configuration
+var config = ConfigurationService.LoadEffectiveConfig();
 
 // Create root command
 var rootCommand = new RootCommand("Database reverse engineering dotnet tool - generates entity mappings from CSV schema files");
@@ -69,17 +76,17 @@ var outputDirOption = new Option<DirectoryInfo>(
 var namespaceOption = new Option<string>(
     aliases: ["-n", "--namespace"],
     description: "Namespace for generated classes",
-    getDefaultValue: () => "Generated");
+    getDefaultValue: () => config.Namespace ?? "Generated");
 
 var contextNameOption = new Option<string>(
     aliases: ["-c", "--context"],
     description: "Name of the database context class",
-    getDefaultValue: () => "AppDbContext");
+    getDefaultValue: () => config.Context ?? "AppDbContext");
 
 var entityModeOption = new Option<string>(
     aliases: ["-e", "--entity-mode"],
     description: "Entity generation mode: class|cls (default), record|rec, struct|str, record_struct|rtr",
-    getDefaultValue: () => "class");
+    getDefaultValue: () => config.EntityMode ?? "class");
 entityModeOption.AddValidator(result =>
 {
     var value = result.GetValueOrDefault<string>();
@@ -89,6 +96,24 @@ entityModeOption.AddValidator(result =>
         result.ErrorMessage = $"Entity mode must be one of: {string.Join(", ", validModes)}";
     }
 });
+
+var localeOption = new Option<string>(
+    aliases: ["-l", "--locale"],
+    description: $"Locale for pluralization ({string.Join(", ", PluralizerService.SupportedLocales.Take(10))}...)",
+    getDefaultValue: () => config.Locale ?? "en-us");
+localeOption.AddValidator(result =>
+{
+    var value = result.GetValueOrDefault<string>();
+    if (value != null && !PluralizerService.SupportedLocales.Contains(value.ToLowerInvariant().Replace('_', '-')))
+    {
+        result.ErrorMessage = $"Locale must be one of: {string.Join(", ", PluralizerService.SupportedLocales)}";
+    }
+});
+
+var noPluralizeOption = new Option<bool>(
+    aliases: ["--no-pluralize"],
+    description: "Disable pluralization/singularization",
+    getDefaultValue: () => config.NoPluralizer);
 
 // Add options to root command
 rootCommand.AddArgument(schemaFileOption);
@@ -100,12 +125,15 @@ rootCommand.AddOption(outputDirOption);
 rootCommand.AddOption(namespaceOption);
 rootCommand.AddOption(contextNameOption);
 rootCommand.AddOption(entityModeOption);
+rootCommand.AddOption(localeOption);
+rootCommand.AddOption(noPluralizeOption);
 
 // Create binder for options
 var optionsBinder = new CommandOptionsBinder(
     schemaFileOption, mappingTypeOption, databaseTypeOption,
     relationshipsFileOption, indexesFileOption, outputDirOption,
-    namespaceOption, contextNameOption, entityModeOption);
+    namespaceOption, contextNameOption, entityModeOption,
+    localeOption, noPluralizeOption);
 
 // Set handler
 rootCommand.SetHandler(async (CommandOptions options) =>
@@ -140,6 +168,9 @@ static async Task ExecuteAsync(CommandOptions options)
         return;
     }
 
+    // Configure NamingHelper with locale settings
+    NamingHelper.Configure(options.Locale, options.NoPluralizer);
+
     // Parse database type
     var dbType = ParseDatabaseType(options.DatabaseType);
     var mapType = ParseMappingType(options.MappingType);
@@ -151,6 +182,8 @@ static async Task ExecuteAsync(CommandOptions options)
     Console.WriteLine($"Mapping type: {mapType}");
     Console.WriteLine($"Database type: {dbType}");
     Console.WriteLine($"Entity mode: {entType}");
+    Console.WriteLine($"Locale: {options.Locale}");
+    Console.WriteLine($"Pluralization: {(options.NoPluralizer ? "Disabled" : "Enabled")}");
     Console.WriteLine($"Output directory: {options.OutputDir.FullName}");
     Console.WriteLine($"Namespace: {options.Namespace}");
     Console.WriteLine($"Context name: {options.ContextName}");
@@ -279,6 +312,8 @@ sealed class CommandOptionsBinder : BinderBase<CommandOptions>
     private readonly Option<string> _namespace;
     private readonly Option<string> _contextName;
     private readonly Option<string> _entityMode;
+    private readonly Option<string> _locale;
+    private readonly Option<bool> _noPluralizer;
 
     public CommandOptionsBinder(
         Argument<FileInfo> schemaFile,
@@ -289,7 +324,9 @@ sealed class CommandOptionsBinder : BinderBase<CommandOptions>
         Option<DirectoryInfo> outputDir,
         Option<string> @namespace,
         Option<string> contextName,
-        Option<string> entityMode)
+        Option<string> entityMode,
+        Option<string> locale,
+        Option<bool> noPluralizer)
     {
         _schemaFile = schemaFile;
         _mappingType = mappingType;
@@ -300,6 +337,8 @@ sealed class CommandOptionsBinder : BinderBase<CommandOptions>
         _namespace = @namespace;
         _contextName = contextName;
         _entityMode = entityMode;
+        _locale = locale;
+        _noPluralizer = noPluralizer;
     }
 
     protected override CommandOptions GetBoundValue(BindingContext bindingContext)
@@ -314,7 +353,9 @@ sealed class CommandOptionsBinder : BinderBase<CommandOptions>
             OutputDir = bindingContext.ParseResult.GetValueForOption(_outputDir)!,
             Namespace = bindingContext.ParseResult.GetValueForOption(_namespace)!,
             ContextName = bindingContext.ParseResult.GetValueForOption(_contextName)!,
-            EntityMode = bindingContext.ParseResult.GetValueForOption(_entityMode)!
+            EntityMode = bindingContext.ParseResult.GetValueForOption(_entityMode)!,
+            Locale = bindingContext.ParseResult.GetValueForOption(_locale)!,
+            NoPluralizer = bindingContext.ParseResult.GetValueForOption(_noPluralizer)
         };
     }
 }

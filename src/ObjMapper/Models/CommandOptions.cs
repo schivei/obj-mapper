@@ -14,4 +14,6 @@ public class CommandOptions
     public string Namespace { get; set; } = "Generated";
     public string ContextName { get; set; } = "AppDbContext";
     public string EntityMode { get; set; } = "class";
+    public string Locale { get; set; } = "en-us";
+    public bool NoPluralizer { get; set; } = false;
 }

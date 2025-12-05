@@ -25,14 +25,9 @@ public class EfCoreGenerator : ICodeGenerator
         var entities = new Dictionary<string, string>();
         var filteredTables = FilterDuplicateTables(schema.Tables);
 
-        // Track used entity names to handle conflicts
-        var usedEntityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
         foreach (var table in filteredTables)
         {
-            var entityName = GetUniqueEntityName(NamingHelper.ToEntityName(table.Name), usedEntityNames);
-            usedEntityNames.Add(entityName);
-            
+            var entityName = NamingHelper.ToEntityName(table.Name);
             var code = GenerateEntityClass(table, schema, entityName);
             entities[$"{entityName}.cs"] = code;
         }
@@ -45,14 +40,9 @@ public class EfCoreGenerator : ICodeGenerator
         var configurations = new Dictionary<string, string>();
         var filteredTables = FilterDuplicateTables(schema.Tables);
 
-        // Track used entity names to handle conflicts
-        var usedEntityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
         foreach (var table in filteredTables)
         {
-            var entityName = GetUniqueEntityName(NamingHelper.ToEntityName(table.Name), usedEntityNames);
-            usedEntityNames.Add(entityName);
-            
+            var entityName = NamingHelper.ToEntityName(table.Name);
             var code = GenerateConfigurationClass(table, schema, entityName);
             configurations[$"{entityName}Configuration.cs"] = code;
         }
@@ -76,26 +66,11 @@ public class EfCoreGenerator : ICodeGenerator
         sb.AppendLine("    }");
         sb.AppendLine();
 
-        // Track used names to avoid duplicates
-        var usedEntityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var usedCollectionNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var tableEntityMap = new List<(TableInfo table, string entityName, string collectionName)>();
-
-        // First pass: determine all entity and collection names
+        // Generate DbSet properties
         foreach (var table in filteredTables)
         {
-            var entityName = GetUniqueEntityName(NamingHelper.ToEntityName(table.Name), usedEntityNames);
-            usedEntityNames.Add(entityName);
-            
-            var collectionName = GetUniqueCollectionName(NamingHelper.ToCollectionName(entityName), usedCollectionNames);
-            usedCollectionNames.Add(collectionName);
-            
-            tableEntityMap.Add((table, entityName, collectionName));
-        }
-
-        // Generate DbSet properties
-        foreach (var (table, entityName, collectionName) in tableEntityMap)
-        {
+            var entityName = NamingHelper.ToEntityName(table.Name);
+            var collectionName = NamingHelper.ToCollectionName(entityName);
             sb.AppendLine($"    public DbSet<{entityName}> {collectionName} {{ get; set; }} = null!;");
         }
 
@@ -106,8 +81,9 @@ public class EfCoreGenerator : ICodeGenerator
         sb.AppendLine();
 
         // Apply configurations
-        foreach (var (table, entityName, collectionName) in tableEntityMap)
+        foreach (var table in filteredTables)
         {
+            var entityName = NamingHelper.ToEntityName(table.Name);
             sb.AppendLine($"        modelBuilder.ApplyConfiguration(new {entityName}Configuration());");
         }
 
@@ -118,14 +94,16 @@ public class EfCoreGenerator : ICodeGenerator
     }
 
     /// <summary>
-    /// Filters tables to remove duplicates where both singular and plural versions exist.
-    /// When duplicates are found, the pluralized version is kept.
+    /// Filters tables to remove duplicates that would generate the same entity name.
+    /// When duplicates are found, the pluralized version is kept (preference for table names like "users" over "user").
+    /// Other duplicates are removed entirely.
     /// </summary>
     /// <param name="tables">List of tables to filter.</param>
-    /// <returns>Filtered list of tables.</returns>
+    /// <returns>Filtered list of tables with no duplicates.</returns>
     private static List<TableInfo> FilterDuplicateTables(List<TableInfo> tables)
     {
         // Group tables by their entity name (which singularizes the table name)
+        // and also by their collection name (pluralized form)
         var entityGroups = tables
             .GroupBy(t => NamingHelper.ToEntityName(t.Name), StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -143,6 +121,7 @@ public class EfCoreGenerator : ICodeGenerator
             {
                 // Multiple tables map to the same entity name
                 // Prefer the pluralized version (the one where table name != entity name)
+                // This means "users" is preferred over "user" since ToEntityName("users") = "User"
                 var pluralizedTable = group.FirstOrDefault(t => 
                     !t.Name.Equals(NamingHelper.ToEntityName(t.Name), StringComparison.OrdinalIgnoreCase));
                 
@@ -158,49 +137,38 @@ public class EfCoreGenerator : ICodeGenerator
             }
         }
 
-        return result;
-    }
+        // Second pass: check for collection name duplicates and remove them
+        var collectionGroups = result
+            .GroupBy(t => NamingHelper.ToCollectionName(NamingHelper.ToEntityName(t.Name)), StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
-    /// <summary>
-    /// Gets a unique entity name that doesn't conflict with existing entity names.
-    /// </summary>
-    private static string GetUniqueEntityName(string proposedName, HashSet<string> existingNames)
-    {
-        if (!existingNames.Contains(proposedName))
+        var finalResult = new List<TableInfo>();
+
+        foreach (var group in collectionGroups)
         {
-            return proposedName;
+            if (group.Count() == 1)
+            {
+                finalResult.Add(group.First());
+            }
+            else
+            {
+                // Multiple tables would generate the same collection name
+                // Prefer the one with pluralized table name
+                var pluralizedTable = group.FirstOrDefault(t => 
+                    !t.Name.Equals(NamingHelper.ToEntityName(t.Name), StringComparison.OrdinalIgnoreCase));
+                
+                if (pluralizedTable != null)
+                {
+                    finalResult.Add(pluralizedTable);
+                }
+                else
+                {
+                    finalResult.Add(group.First());
+                }
+            }
         }
 
-        var baseName = proposedName;
-        var counter = 1;
-        while (existingNames.Contains(proposedName))
-        {
-            proposedName = $"{baseName}{counter}";
-            counter++;
-        }
-
-        return proposedName;
-    }
-
-    /// <summary>
-    /// Gets a unique collection name that doesn't conflict with existing collection names.
-    /// </summary>
-    private static string GetUniqueCollectionName(string proposedName, HashSet<string> existingNames)
-    {
-        if (!existingNames.Contains(proposedName))
-        {
-            return proposedName;
-        }
-
-        var baseName = proposedName;
-        var counter = 1;
-        while (existingNames.Contains(proposedName))
-        {
-            proposedName = $"{baseName}{counter}";
-            counter++;
-        }
-
-        return proposedName;
+        return finalResult;
     }
 
     private string GenerateEntityClass(TableInfo table, DatabaseSchema schema, string entityName)

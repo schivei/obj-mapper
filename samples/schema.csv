@@ -1,0 +1,15 @@
+schema,table,column,nullable,type,comment
+public,users,id,false,int,Primary key
+public,users,name,false,varchar(100),User name
+public,users,email,true,varchar(255),Email address
+public,users,created_at,false,timestamp,Creation timestamp
+public,orders,id,false,int,Primary key
+public,orders,user_id,false,int,Foreign key to users
+public,orders,total,false,"decimal(10,2)",Order total
+public,orders,status,false,varchar(50),Order status
+public,orders,created_at,false,timestamp,Creation timestamp
+public,order_items,id,false,int,Primary key
+public,order_items,order_id,false,int,Foreign key to orders
+public,order_items,product_name,false,varchar(200),Product name
+public,order_items,quantity,false,int,Quantity
+public,order_items,price,false,"decimal(10,2)",Item price

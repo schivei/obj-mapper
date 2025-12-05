@@ -27,10 +27,15 @@ public class DapperGenerator : ICodeGenerator
         var entities = new Dictionary<string, string>();
         var filteredTables = FilterDuplicateTables(schema.Tables);
 
+        // Track used entity names to handle conflicts
+        var usedEntityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var table in filteredTables)
         {
-            var entityName = NamingHelper.ToEntityName(table.Name);
-            var code = GenerateEntityClass(table);
+            var entityName = GetUniqueEntityName(NamingHelper.ToEntityName(table.Name), usedEntityNames);
+            usedEntityNames.Add(entityName);
+            
+            var code = GenerateEntityClass(table, entityName);
             entities[$"{entityName}.cs"] = code;
         }
 
@@ -43,10 +48,15 @@ public class DapperGenerator : ICodeGenerator
         var repositories = new Dictionary<string, string>();
         var filteredTables = FilterDuplicateTables(schema.Tables);
 
+        // Track used entity names to handle conflicts
+        var usedEntityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var table in filteredTables)
         {
-            var entityName = NamingHelper.ToEntityName(table.Name);
-            var code = GenerateRepositoryClass(table);
+            var entityName = GetUniqueEntityName(NamingHelper.ToEntityName(table.Name), usedEntityNames);
+            usedEntityNames.Add(entityName);
+            
+            var code = GenerateRepositoryClass(table, entityName);
             repositories[$"{entityName}Repository.cs"] = code;
         }
 
@@ -90,15 +100,31 @@ public class DapperGenerator : ICodeGenerator
         sb.AppendLine("    }");
         sb.AppendLine();
 
-        // Generate repository properties
+        // Track used names to avoid duplicates
+        var usedEntityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var usedCollectionNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var tableEntityMap = new List<(TableInfo table, string entityName, string collectionName)>();
+
+        // First pass: determine all entity and collection names
         foreach (var table in filteredTables)
         {
-            var entityName = NamingHelper.ToEntityName(table.Name);
+            var entityName = GetUniqueEntityName(NamingHelper.ToEntityName(table.Name), usedEntityNames);
+            usedEntityNames.Add(entityName);
+            
+            var collectionName = GetUniqueCollectionName(NamingHelper.ToCollectionName(entityName), usedCollectionNames);
+            usedCollectionNames.Add(collectionName);
+            
+            tableEntityMap.Add((table, entityName, collectionName));
+        }
+
+        // Generate repository properties
+        foreach (var (table, entityName, collectionName) in tableEntityMap)
+        {
             var repositoryField = $"_{NamingHelper.ToCamelCase(entityName)}Repository";
             var repositoryProperty = $"{entityName}Repository";
             
             sb.AppendLine($"    private {repositoryProperty}? {repositoryField};");
-            sb.AppendLine($"    public {repositoryProperty} {NamingHelper.ToCollectionName(entityName)} => {repositoryField} ??= new {repositoryProperty}(Connection);");
+            sb.AppendLine($"    public {repositoryProperty} {collectionName} => {repositoryField} ??= new {repositoryProperty}(Connection);");
             sb.AppendLine();
         }
 
@@ -157,9 +183,50 @@ public class DapperGenerator : ICodeGenerator
         return result;
     }
 
-    private string GenerateEntityClass(TableInfo table)
+    /// <summary>
+    /// Gets a unique entity name that doesn't conflict with existing entity names.
+    /// </summary>
+    private static string GetUniqueEntityName(string proposedName, HashSet<string> existingNames)
     {
-        var entityName = NamingHelper.ToEntityName(table.Name);
+        if (!existingNames.Contains(proposedName))
+        {
+            return proposedName;
+        }
+
+        var baseName = proposedName;
+        var counter = 1;
+        while (existingNames.Contains(proposedName))
+        {
+            proposedName = $"{baseName}{counter}";
+            counter++;
+        }
+
+        return proposedName;
+    }
+
+    /// <summary>
+    /// Gets a unique collection name that doesn't conflict with existing collection names.
+    /// </summary>
+    private static string GetUniqueCollectionName(string proposedName, HashSet<string> existingNames)
+    {
+        if (!existingNames.Contains(proposedName))
+        {
+            return proposedName;
+        }
+
+        var baseName = proposedName;
+        var counter = 1;
+        while (existingNames.Contains(proposedName))
+        {
+            proposedName = $"{baseName}{counter}";
+            counter++;
+        }
+
+        return proposedName;
+    }
+
+    private string GenerateEntityClass(TableInfo table, string entityName)
+    {
         var sb = new StringBuilder();
         
         // Collect all property names first to detect conflicts
@@ -243,9 +310,8 @@ public class DapperGenerator : ICodeGenerator
         return sb.ToString();
     }
 
-    private string GenerateRepositoryClass(TableInfo table)
+    private string GenerateRepositoryClass(TableInfo table, string entityName)
     {
-        var entityName = NamingHelper.ToEntityName(table.Name);
         var sb = new StringBuilder();
         var tableName = GetFullTableName(table);
         

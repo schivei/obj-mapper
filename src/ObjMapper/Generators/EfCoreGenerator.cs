@@ -25,10 +25,15 @@ public class EfCoreGenerator : ICodeGenerator
         var entities = new Dictionary<string, string>();
         var filteredTables = FilterDuplicateTables(schema.Tables);
 
+        // Track used entity names to handle conflicts
+        var usedEntityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var table in filteredTables)
         {
-            var entityName = NamingHelper.ToEntityName(table.Name);
-            var code = GenerateEntityClass(table, schema);
+            var entityName = GetUniqueEntityName(NamingHelper.ToEntityName(table.Name), usedEntityNames);
+            usedEntityNames.Add(entityName);
+            
+            var code = GenerateEntityClass(table, schema, entityName);
             entities[$"{entityName}.cs"] = code;
         }
 
@@ -40,10 +45,15 @@ public class EfCoreGenerator : ICodeGenerator
         var configurations = new Dictionary<string, string>();
         var filteredTables = FilterDuplicateTables(schema.Tables);
 
+        // Track used entity names to handle conflicts
+        var usedEntityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var table in filteredTables)
         {
-            var entityName = NamingHelper.ToEntityName(table.Name);
-            var code = GenerateConfigurationClass(table, schema);
+            var entityName = GetUniqueEntityName(NamingHelper.ToEntityName(table.Name), usedEntityNames);
+            usedEntityNames.Add(entityName);
+            
+            var code = GenerateConfigurationClass(table, schema, entityName);
             configurations[$"{entityName}Configuration.cs"] = code;
         }
 
@@ -66,11 +76,26 @@ public class EfCoreGenerator : ICodeGenerator
         sb.AppendLine("    }");
         sb.AppendLine();
 
-        // Generate DbSet properties
+        // Track used names to avoid duplicates
+        var usedEntityNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var usedCollectionNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var tableEntityMap = new List<(TableInfo table, string entityName, string collectionName)>();
+
+        // First pass: determine all entity and collection names
         foreach (var table in filteredTables)
         {
-            var entityName = NamingHelper.ToEntityName(table.Name);
-            var collectionName = NamingHelper.ToCollectionName(entityName);
+            var entityName = GetUniqueEntityName(NamingHelper.ToEntityName(table.Name), usedEntityNames);
+            usedEntityNames.Add(entityName);
+            
+            var collectionName = GetUniqueCollectionName(NamingHelper.ToCollectionName(entityName), usedCollectionNames);
+            usedCollectionNames.Add(collectionName);
+            
+            tableEntityMap.Add((table, entityName, collectionName));
+        }
+
+        // Generate DbSet properties
+        foreach (var (table, entityName, collectionName) in tableEntityMap)
+        {
             sb.AppendLine($"    public DbSet<{entityName}> {collectionName} {{ get; set; }} = null!;");
         }
 
@@ -81,9 +106,8 @@ public class EfCoreGenerator : ICodeGenerator
         sb.AppendLine();
 
         // Apply configurations
-        foreach (var table in filteredTables)
+        foreach (var (table, entityName, collectionName) in tableEntityMap)
         {
-            var entityName = NamingHelper.ToEntityName(table.Name);
             sb.AppendLine($"        modelBuilder.ApplyConfiguration(new {entityName}Configuration());");
         }
 
@@ -137,9 +161,50 @@ public class EfCoreGenerator : ICodeGenerator
         return result;
     }
 
-    private string GenerateEntityClass(TableInfo table, DatabaseSchema schema)
+    /// <summary>
+    /// Gets a unique entity name that doesn't conflict with existing entity names.
+    /// </summary>
+    private static string GetUniqueEntityName(string proposedName, HashSet<string> existingNames)
     {
-        var entityName = NamingHelper.ToEntityName(table.Name);
+        if (!existingNames.Contains(proposedName))
+        {
+            return proposedName;
+        }
+
+        var baseName = proposedName;
+        var counter = 1;
+        while (existingNames.Contains(proposedName))
+        {
+            proposedName = $"{baseName}{counter}";
+            counter++;
+        }
+
+        return proposedName;
+    }
+
+    /// <summary>
+    /// Gets a unique collection name that doesn't conflict with existing collection names.
+    /// </summary>
+    private static string GetUniqueCollectionName(string proposedName, HashSet<string> existingNames)
+    {
+        if (!existingNames.Contains(proposedName))
+        {
+            return proposedName;
+        }
+
+        var baseName = proposedName;
+        var counter = 1;
+        while (existingNames.Contains(proposedName))
+        {
+            proposedName = $"{baseName}{counter}";
+            counter++;
+        }
+
+        return proposedName;
+    }
+
+    private string GenerateEntityClass(TableInfo table, DatabaseSchema schema, string entityName)
+    {
         var sb = new StringBuilder();
 
         // Collect all property names first to detect conflicts
@@ -216,9 +281,8 @@ public class EfCoreGenerator : ICodeGenerator
         return sb.ToString();
     }
 
-    private string GenerateConfigurationClass(TableInfo table, DatabaseSchema schema)
+    private string GenerateConfigurationClass(TableInfo table, DatabaseSchema schema, string entityName)
     {
-        var entityName = NamingHelper.ToEntityName(table.Name);
         var sb = new StringBuilder();
         
         // Track property names for this entity to handle conflicts

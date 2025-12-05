@@ -1,0 +1,5 @@
+schema,table,name,key,type
+public,users,idx_users_email,email,unique
+public,orders,idx_orders_user_id,user_id,btree
+public,orders,idx_orders_status,status,btree
+public,order_items,idx_order_items_order_id,order_id,btree

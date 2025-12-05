@@ -1,4 +1,4 @@
-# obj-mapper
+# omap
 
 Database reverse engineering dotnet tool - generates entity mappings from CSV schema files for EF Core and Dapper.
 
@@ -18,7 +18,7 @@ dotnet tool install ObjMapper
 ## Usage
 
 ```bash
-obj-mapper <csv-file> -t <mapping-type> -d <database-type> [options]
+omap <csv-file> -t <mapping-type> -d <database-type> [options]
 ```
 
 ### Arguments
@@ -40,7 +40,14 @@ obj-mapper <csv-file> -t <mapping-type> -d <database-type> [options]
   - `sqlite`: SQLite
 
 - `-f, --foreignkeys`: CSV file with relationships (optional)
-  - Columns: `from`, `to`, `keys`, `foreignkeys`
+  - Columns: `name`, `schema_from`, `schema_to`, `table_from`, `table_to`, `key`, `foreign`
+  - Supports composite keys (comma-separated in `key` and `foreign` columns)
+  - Supports cross-schema relationships
+
+- `-i, --indexes`: CSV file with indexes (optional)
+  - Columns: `schema`, `table`, `name`, `key`, `type`
+  - Supports composite indexes (comma-separated in `key` column)
+  - Type can be: `unique`, `btree`, `hash`, `fulltext`, etc.
 
 - `-o, --output`: Output directory for generated files (default: current directory)
 
@@ -48,18 +55,30 @@ obj-mapper <csv-file> -t <mapping-type> -d <database-type> [options]
 
 - `-c, --context`: Name of the database context class (default: `AppDbContext`)
 
+- `-e, --entity-mode`: Entity generation mode (default: `class`)
+  - `class` or `cls`: Generate as classes
+  - `record` or `rec`: Generate as records
+  - `struct` or `str`: Generate as structs
+  - `record_struct` or `rtr`: Generate as record structs
+
 ## Examples
 
 ### Generate EF Core mappings
 
 ```bash
-obj-mapper schema.csv -t efcore -d postgresql -o ./Generated -n MyApp.Data
+omap schema.csv -t efcore -d postgresql -o ./Generated -n MyApp.Data
 ```
 
-### Generate Dapper mappings with relationships
+### Generate Dapper mappings with relationships and indexes
 
 ```bash
-obj-mapper schema.csv -t dapper -d mysql -f relationships.csv -o ./Generated -n MyApp.Data -c MyDbContext
+omap schema.csv -t dapper -d mysql -f relationships.csv -i indexes.csv -o ./Generated -n MyApp.Data -c MyDbContext
+```
+
+### Generate as records
+
+```bash
+omap schema.csv -t efcore -d sqlserver -e record -o ./Generated -n MyApp.Data
 ```
 
 ## CSV File Formats
@@ -80,13 +99,28 @@ public,orders,total,false,decimal(10,2),Order total
 ### Relationships CSV (relationships.csv)
 
 ```csv
-from,to,keys,foreignkeys
-orders,users,id,user_id
+name,schema_from,schema_to,table_from,table_to,key,foreign
+fk_orders_users,public,public,orders,users,id,user_id
+```
+
+For composite keys:
+
+```csv
+name,schema_from,schema_to,table_from,table_to,key,foreign
+fk_composite,public,public,order_items,orders,"order_id,product_id","order_id,product_id"
+```
+
+### Indexes CSV (indexes.csv)
+
+```csv
+schema,table,name,key,type
+public,users,idx_users_email,email,unique
+public,orders,idx_orders_user_id,user_id,btree
 ```
 
 ## Output Structure
 
-The tool generates the following files:
+The tool generates the following files (all types are `partial`):
 
 ```
 output/
@@ -100,6 +134,13 @@ output/
 │   └── OrderRepository.cs        # Dapper only
 └── AppDbContext.cs
 ```
+
+## Versioning
+
+The tool uses semantic versioning with support for preview versions:
+- Release: `1.0.0`
+- Beta: `1.0.0-beta1`
+- Release Candidate: `1.0.0-rc1`
 
 ## License
 

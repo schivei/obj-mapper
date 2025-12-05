@@ -8,6 +8,11 @@ namespace ObjMapper.Generators;
 public interface ICodeGenerator
 {
     /// <summary>
+    /// Gets or sets the entity type mode for generating entities.
+    /// </summary>
+    EntityTypeMode EntityTypeMode { get; set; }
+    
+    /// <summary>
     /// Generates entity classes.
     /// </summary>
     Dictionary<string, string> GenerateEntities(DatabaseSchema schema);

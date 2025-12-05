@@ -12,6 +12,8 @@ public class EfCoreGenerator : ICodeGenerator
     private readonly TypeMapper _typeMapper;
     private readonly string _namespace;
 
+    public EntityTypeMode EntityTypeMode { get; set; } = EntityTypeMode.Class;
+
     public EfCoreGenerator(DatabaseType databaseType, string namespaceName = "Generated")
     {
         _typeMapper = new TypeMapper(databaseType);
@@ -54,7 +56,7 @@ public class EfCoreGenerator : ICodeGenerator
         sb.AppendLine();
         sb.AppendLine($"namespace {_namespace};");
         sb.AppendLine();
-        sb.AppendLine($"public class {contextName} : DbContext");
+        sb.AppendLine($"public partial class {contextName} : DbContext");
         sb.AppendLine("{");
         sb.AppendLine($"    public {contextName}(DbContextOptions<{contextName}> options) : base(options)");
         sb.AppendLine("    {");
@@ -104,7 +106,9 @@ public class EfCoreGenerator : ICodeGenerator
             sb.AppendLine("/// </summary>");
         }
 
-        sb.AppendLine($"public class {entityName}");
+        // Generate the type declaration based on EntityTypeMode
+        var typeKeyword = GetTypeKeyword();
+        sb.AppendLine($"public partial {typeKeyword} {entityName}");
         sb.AppendLine("{");
 
         // Generate properties for columns
@@ -138,7 +142,7 @@ public class EfCoreGenerator : ICodeGenerator
         // Generate navigation properties for outgoing relationships (foreign keys)
         foreach (var rel in table.OutgoingRelationships)
         {
-            var relatedEntityName = NamingHelper.ToEntityName(GetTableNameFromFullName(rel.To));
+            var relatedEntityName = NamingHelper.ToEntityName(rel.TableTo);
             var propertyName = relatedEntityName;
             
             sb.AppendLine();
@@ -148,7 +152,7 @@ public class EfCoreGenerator : ICodeGenerator
         // Generate navigation properties for incoming relationships (inverse navigation)
         foreach (var rel in table.IncomingRelationships)
         {
-            var relatedEntityName = NamingHelper.ToEntityName(GetTableNameFromFullName(rel.From));
+            var relatedEntityName = NamingHelper.ToEntityName(rel.TableFrom);
             var collectionName = NamingHelper.ToCollectionName(relatedEntityName);
             
             sb.AppendLine();
@@ -170,7 +174,7 @@ public class EfCoreGenerator : ICodeGenerator
         sb.AppendLine();
         sb.AppendLine($"namespace {_namespace};");
         sb.AppendLine();
-        sb.AppendLine($"public class {entityName}Configuration : IEntityTypeConfiguration<{entityName}>");
+        sb.AppendLine($"public partial class {entityName}Configuration : IEntityTypeConfiguration<{entityName}>");
         sb.AppendLine("{");
         sb.AppendLine($"    public void Configure(EntityTypeBuilder<{entityName}> builder)");
         sb.AppendLine("    {");
@@ -232,18 +236,59 @@ public class EfCoreGenerator : ICodeGenerator
             sb.AppendLine();
         }
 
+        // Configure indexes
+        foreach (var index in table.Indexes)
+        {
+            var keyProperties = index.Keys.Select(k => $"e.{NamingHelper.ToPascalCase(k)}");
+            var keysExpression = index.Keys.Length == 1 
+                ? keyProperties.First() 
+                : $"new {{ {string.Join(", ", keyProperties)} }}";
+            
+            sb.Append($"        builder.HasIndex(e => {keysExpression})");
+            
+            if (!string.IsNullOrEmpty(index.Name))
+            {
+                sb.AppendLine();
+                sb.Append($"            .HasDatabaseName(\"{index.Name}\")");
+            }
+            
+            if (index.IsUnique)
+            {
+                sb.AppendLine();
+                sb.Append("            .IsUnique()");
+            }
+            
+            sb.AppendLine(";");
+            sb.AppendLine();
+        }
+
         // Configure relationships
         foreach (var rel in table.OutgoingRelationships)
         {
-            var relatedEntityName = NamingHelper.ToEntityName(GetTableNameFromFullName(rel.To));
-            var foreignKeyProperty = NamingHelper.ToPascalCase(rel.ForeignKeys);
-            var principalKeyProperty = NamingHelper.ToPascalCase(rel.Keys);
+            var relatedEntityName = NamingHelper.ToEntityName(rel.TableTo);
             var inverseCollectionName = NamingHelper.ToCollectionName(entityName);
 
-            sb.AppendLine($"        builder.HasOne(e => e.{relatedEntityName})");
-            sb.AppendLine($"            .WithMany(e => e.{inverseCollectionName})");
-            sb.AppendLine($"            .HasForeignKey(e => e.{foreignKeyProperty})");
-            sb.AppendLine($"            .HasPrincipalKey(e => e.{principalKeyProperty});");
+            // Handle composite keys
+            if (rel.ForeignKeys.Length == 1)
+            {
+                var foreignKeyProperty = NamingHelper.ToPascalCase(rel.ForeignKeys[0]);
+                var principalKeyProperty = NamingHelper.ToPascalCase(rel.Keys[0]);
+
+                sb.AppendLine($"        builder.HasOne(e => e.{relatedEntityName})");
+                sb.AppendLine($"            .WithMany(e => e.{inverseCollectionName})");
+                sb.AppendLine($"            .HasForeignKey(e => e.{foreignKeyProperty})");
+                sb.AppendLine($"            .HasPrincipalKey(e => e.{principalKeyProperty});");
+            }
+            else
+            {
+                var foreignKeyProperties = rel.ForeignKeys.Select(k => $"e.{NamingHelper.ToPascalCase(k)}");
+                var principalKeyProperties = rel.Keys.Select(k => $"e.{NamingHelper.ToPascalCase(k)}");
+
+                sb.AppendLine($"        builder.HasOne(e => e.{relatedEntityName})");
+                sb.AppendLine($"            .WithMany(e => e.{inverseCollectionName})");
+                sb.AppendLine($"            .HasForeignKey(e => new {{ {string.Join(", ", foreignKeyProperties)} }})");
+                sb.AppendLine($"            .HasPrincipalKey(e => new {{ {string.Join(", ", principalKeyProperties)} }});");
+            }
             sb.AppendLine();
         }
 
@@ -253,10 +298,16 @@ public class EfCoreGenerator : ICodeGenerator
         return sb.ToString();
     }
 
-    private static string GetTableNameFromFullName(string fullName)
+    private string GetTypeKeyword()
     {
-        var parts = fullName.Split('.');
-        return parts.Length > 1 ? parts[^1] : fullName;
+        return EntityTypeMode switch
+        {
+            EntityTypeMode.Class => "class",
+            EntityTypeMode.Record => "record",
+            EntityTypeMode.Struct => "struct",
+            EntityTypeMode.RecordStruct => "record struct",
+            _ => "class"
+        };
     }
 
     private static bool NeedsColumnType(string dbType)

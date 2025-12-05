@@ -13,6 +13,8 @@ public class DapperGenerator : ICodeGenerator
     private readonly string _namespace;
     private readonly DatabaseType _databaseType;
 
+    public EntityTypeMode EntityTypeMode { get; set; } = EntityTypeMode.Class;
+
     public DapperGenerator(DatabaseType databaseType, string namespaceName = "Generated")
     {
         _typeMapper = new TypeMapper(databaseType);
@@ -61,7 +63,7 @@ public class DapperGenerator : ICodeGenerator
         sb.AppendLine("/// <summary>");
         sb.AppendLine("/// Database context for Dapper operations.");
         sb.AppendLine("/// </summary>");
-        sb.AppendLine($"public class {contextName} : IDisposable");
+        sb.AppendLine($"public partial class {contextName} : IDisposable");
         sb.AppendLine("{");
         sb.AppendLine("    private readonly string _connectionString;");
         sb.AppendLine("    private IDbConnection? _connection;");
@@ -129,7 +131,9 @@ public class DapperGenerator : ICodeGenerator
             sb.AppendLine($"[Table(\"{table.Name}\")]");
         }
 
-        sb.AppendLine($"public class {entityName}");
+        // Generate the type declaration based on EntityTypeMode
+        var typeKeyword = GetTypeKeyword();
+        sb.AppendLine($"public partial {typeKeyword} {entityName}");
         sb.AppendLine("{");
 
         // Generate properties for columns
@@ -211,7 +215,7 @@ public class DapperGenerator : ICodeGenerator
         sb.AppendLine("/// <summary>");
         sb.AppendLine($"/// Repository for {entityName} entity.");
         sb.AppendLine("/// </summary>");
-        sb.AppendLine($"public class {entityName}Repository");
+        sb.AppendLine($"public partial class {entityName}Repository");
         sb.AppendLine("{");
         sb.AppendLine("    private readonly IDbConnection _connection;");
         sb.AppendLine();
@@ -294,6 +298,18 @@ public class DapperGenerator : ICodeGenerator
         sb.AppendLine("}");
 
         return sb.ToString();
+    }
+
+    private string GetTypeKeyword()
+    {
+        return EntityTypeMode switch
+        {
+            EntityTypeMode.Class => "class",
+            EntityTypeMode.Record => "record",
+            EntityTypeMode.Struct => "struct",
+            EntityTypeMode.RecordStruct => "record struct",
+            _ => "class"
+        };
     }
 
     private string GetFullTableName(TableInfo table)

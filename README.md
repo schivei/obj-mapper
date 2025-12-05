@@ -98,6 +98,39 @@ Settings are applied in this order (later overrides earlier):
 3. Local configuration (`.omap/config.json` found recursively)
 4. Command-line arguments
 
+### Configuration Commands
+
+```bash
+# Set a configuration value (global by default)
+omap config set locale pt-br
+omap config set namespace MyApp.Data
+omap config set database postgresql
+
+# Set a local configuration value
+omap config set locale pt-br --local
+
+# Remove a configuration value
+omap config unset namespace
+omap config unset namespace --local
+
+# List all configuration values
+omap config list
+
+# Show configuration file paths
+omap config path
+omap config path --local
+omap config path --global
+```
+
+Available configuration keys:
+- `locale` / `l` - Locale for pluralization
+- `namespace` / `n` - Namespace for generated classes
+- `database` / `d` - Database type
+- `type` / `t` - Mapping type (efcore/dapper)
+- `entity-mode` / `e` - Entity generation mode
+- `context` / `c` - Database context name
+- `no-pluralize` - Disable pluralization (true/false)
+
 ## Examples
 
 ### Generate EF Core mappings

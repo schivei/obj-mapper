@@ -14,6 +14,111 @@ var config = ConfigurationService.LoadEffectiveConfig();
 // Create root command
 var rootCommand = new RootCommand("Database reverse engineering dotnet tool - generates entity mappings from CSV schema files");
 
+// ============================================
+// Config subcommand
+// ============================================
+var configCommand = new Command("config", "Manage omap configuration");
+
+// Config set command
+var configSetCommand = new Command("set", "Set a configuration value");
+var configKeyArg = new Argument<string>("key", "Configuration key (locale, namespace, database, type, entity-mode, context, no-pluralize)");
+var configValueArg = new Argument<string>("value", "Configuration value");
+var configLocalOption = new Option<bool>("--local", "Force local configuration (in .omap folder near solution/project)");
+
+configSetCommand.AddArgument(configKeyArg);
+configSetCommand.AddArgument(configValueArg);
+configSetCommand.AddOption(configLocalOption);
+
+configSetCommand.SetHandler((string key, string value, bool local) =>
+{
+    var (success, path) = ConfigurationService.SetConfigValue(key, value, local);
+    if (success)
+    {
+        Console.WriteLine($"Configuration '{key}' set to '{value}'");
+        Console.WriteLine($"Saved to: {path}");
+    }
+    else
+    {
+        Console.Error.WriteLine($"Failed to set configuration: {path}");
+    }
+}, configKeyArg, configValueArg, configLocalOption);
+
+// Config unset command
+var configUnsetCommand = new Command("unset", "Remove a configuration value");
+var configUnsetKeyArg = new Argument<string>("key", "Configuration key to remove");
+var configUnsetLocalOption = new Option<bool>("--local", "Remove from local configuration");
+
+configUnsetCommand.AddArgument(configUnsetKeyArg);
+configUnsetCommand.AddOption(configUnsetLocalOption);
+
+configUnsetCommand.SetHandler((string key, bool local) =>
+{
+    var (success, path) = ConfigurationService.UnsetConfigValue(key, local);
+    if (success)
+    {
+        Console.WriteLine($"Configuration '{key}' removed");
+        Console.WriteLine($"Updated: {path}");
+    }
+    else
+    {
+        Console.Error.WriteLine($"Failed to unset configuration: {path}");
+    }
+}, configUnsetKeyArg, configUnsetLocalOption);
+
+// Config list command
+var configListCommand = new Command("list", "List all configuration values");
+configListCommand.SetHandler(() =>
+{
+    Console.WriteLine("omap Configuration");
+    Console.WriteLine("==================");
+    Console.WriteLine();
+    Console.WriteLine($"Global config: {ConfigurationService.GlobalConfigPath}");
+    Console.WriteLine($"Local config:  {ConfigurationService.GetLocalConfigPath()}");
+    Console.WriteLine();
+    Console.WriteLine("Current settings:");
+    Console.WriteLine();
+
+    var configs = ConfigurationService.ListConfig();
+    var maxKeyLen = configs.Keys.Max(k => k.Length);
+    
+    foreach (var (key, (value, source)) in configs)
+    {
+        var displayValue = value ?? "(not set)";
+        Console.WriteLine($"  {key.PadRight(maxKeyLen + 2)} = {displayValue,-20} [{source}]");
+    }
+});
+
+// Config path command
+var configPathCommand = new Command("path", "Show configuration file paths");
+var configPathLocalOption = new Option<bool>("--local", "Show local configuration path");
+var configPathGlobalOption = new Option<bool>("--global", "Show global configuration path");
+
+configPathCommand.AddOption(configPathLocalOption);
+configPathCommand.AddOption(configPathGlobalOption);
+
+configPathCommand.SetHandler((bool local, bool global) =>
+{
+    if (local || (!local && !global))
+    {
+        Console.WriteLine($"Local:  {ConfigurationService.GetLocalConfigPath()}");
+    }
+    if (global || (!local && !global))
+    {
+        Console.WriteLine($"Global: {ConfigurationService.GlobalConfigPath}");
+    }
+}, configPathLocalOption, configPathGlobalOption);
+
+configCommand.AddCommand(configSetCommand);
+configCommand.AddCommand(configUnsetCommand);
+configCommand.AddCommand(configListCommand);
+configCommand.AddCommand(configPathCommand);
+
+rootCommand.AddCommand(configCommand);
+
+// ============================================
+// Main generate command options
+// ============================================
+
 // Define options
 var schemaFileOption = new Argument<FileInfo>(
     name: "csv",

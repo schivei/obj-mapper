@@ -1,7 +1,10 @@
+using ObjMapper.Services.Pluralization;
+
 namespace ObjMapper.Services;
 
 /// <summary>
 /// Service for pluralization and singularization in multiple languages.
+/// Uses language-specific irregular dictionaries for accurate pluralization.
 /// </summary>
 public class PluralizerService
 {
@@ -9,23 +12,76 @@ public class PluralizerService
     private readonly bool _disabled;
 
     /// <summary>
-    /// List of supported locales.
+    /// List of supported locales with dialects.
     /// </summary>
     public static readonly string[] SupportedLocales =
     [
-        "en-us", "en-gb", "en",       // English
-        "pt-br", "pt-pt", "pt",       // Portuguese
-        "es-es", "es-mx", "es",       // Spanish
-        "fr-fr", "fr-ca", "fr",       // French
-        "de-de", "de",                // German
-        "it-it", "it",                // Italian
-        "nl-nl", "nl",                // Dutch
-        "ru-ru", "ru",                // Russian
-        "pl-pl", "pl",                // Polish
-        "tr-tr", "tr",                // Turkish
-        "ja-jp", "ja",                // Japanese
-        "ko-kr", "ko",                // Korean
-        "zh-cn", "zh-tw", "zh"        // Chinese
+        // English (and dialects)
+        "en-us", "en-gb", "en-au", "en-ca", "en-nz", "en-ie", "en",
+        
+        // Portuguese (and dialects)
+        "pt-br", "pt-pt", "pt-ao", "pt-mz", "pt",
+        
+        // Spanish (and dialects)
+        "es-es", "es-mx", "es-ar", "es-co", "es-cl", "es-pe", "es",
+        
+        // French (and dialects)
+        "fr-fr", "fr-ca", "fr-be", "fr-ch", "fr",
+        
+        // German (and dialects)
+        "de-de", "de-at", "de-ch", "de",
+        
+        // Italian
+        "it-it", "it-ch", "it",
+        
+        // Dutch
+        "nl-nl", "nl-be", "nl",
+        
+        // Russian
+        "ru-ru", "ru",
+        
+        // Polish
+        "pl-pl", "pl",
+        
+        // Turkish
+        "tr-tr", "tr",
+        
+        // Japanese (standard and regional)
+        "ja-jp", "ja",
+        
+        // Korean (South and North)
+        "ko-kr", "ko-kp", "ko",
+        
+        // Chinese (Simplified, Traditional, and regional)
+        "zh-cn", "zh-tw", "zh-hk", "zh-sg", "zh",
+        
+        // Additional Asian languages
+        "vi-vn", "vi",        // Vietnamese
+        "th-th", "th",        // Thai
+        "id-id", "id",        // Indonesian
+        "ms-my", "ms",        // Malay
+        
+        // Additional European languages
+        "cs-cz", "cs",        // Czech
+        "sk-sk", "sk",        // Slovak
+        "hu-hu", "hu",        // Hungarian
+        "ro-ro", "ro",        // Romanian
+        "bg-bg", "bg",        // Bulgarian
+        "uk-ua", "uk",        // Ukrainian
+        "el-gr", "el",        // Greek
+        "sv-se", "sv",        // Swedish
+        "da-dk", "da",        // Danish
+        "no-no", "nb", "nn",  // Norwegian (Bokmål and Nynorsk)
+        "fi-fi", "fi",        // Finnish
+        
+        // Middle Eastern
+        "ar-sa", "ar-eg", "ar",  // Arabic
+        "he-il", "he",           // Hebrew
+        "fa-ir", "fa",           // Persian/Farsi
+        
+        // Indian subcontinent
+        "hi-in", "hi",        // Hindi
+        "bn-bd", "bn-in", "bn" // Bengali
     ];
 
     public PluralizerService(string locale = "en-us", bool disabled = false)
@@ -71,9 +127,12 @@ public class PluralizerService
             "ru" => SingularizeRussian(word),
             "pl" => SingularizePolish(word),
             "tr" => SingularizeTurkish(word),
-            "ja" => word, // Japanese doesn't typically inflect for plural
-            "ko" => word, // Korean doesn't typically inflect for plural
-            "zh" => word, // Chinese doesn't typically inflect for plural
+            "ja" => JapaneseHelper.Instance.Singularize(word),
+            "ko" => KoreanHelper.Instance.Singularize(word),
+            "zh" => ChineseHelper.Instance.Singularize(word),
+            "vi" or "th" or "id" or "ms" => word, // No plural forms
+            "ar" or "he" or "fa" => word, // Complex plural systems, return as-is
+            "hi" or "bn" => word, // Complex plural systems, return as-is
             _ => SingularizeEnglish(word)
         };
     }
@@ -98,9 +157,12 @@ public class PluralizerService
             "ru" => PluralizeRussian(word),
             "pl" => PluralizePolish(word),
             "tr" => PluralizeTurkish(word),
-            "ja" => word, // Japanese doesn't typically inflect for plural
-            "ko" => word, // Korean doesn't typically inflect for plural
-            "zh" => word, // Chinese doesn't typically inflect for plural
+            "ja" => JapaneseHelper.Instance.Pluralize(word),
+            "ko" => KoreanHelper.Instance.Pluralize(word),
+            "zh" => ChineseHelper.Instance.Pluralize(word),
+            "vi" or "th" or "id" or "ms" => word, // No plural forms
+            "ar" or "he" or "fa" => word, // Complex plural systems, return as-is
+            "hi" or "bn" => word, // Complex plural systems, return as-is
             _ => PluralizeEnglish(word)
         };
     }
@@ -109,17 +171,9 @@ public class PluralizerService
 
     private static string SingularizeEnglish(string word)
     {
-        // Handle irregular plurals
-        var irregulars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            { "people", "person" }, { "men", "man" }, { "women", "woman" },
-            { "children", "child" }, { "teeth", "tooth" }, { "feet", "foot" },
-            { "mice", "mouse" }, { "geese", "goose" }, { "oxen", "ox" },
-            { "data", "datum" }, { "criteria", "criterion" }, { "phenomena", "phenomenon" }
-        };
-
-        if (irregulars.TryGetValue(word, out var singular))
-            return PreserveCase(word, singular);
+        // Check dictionary first
+        if (EnglishIrregulars.Instance.TryGetSingular(word, out var singular))
+            return PreserveCase(word, singular!);
 
         // Handle common plural endings
         if (word.EndsWith("ies", StringComparison.OrdinalIgnoreCase) && word.Length > 3)
@@ -146,17 +200,9 @@ public class PluralizerService
 
     private static string PluralizeEnglish(string word)
     {
-        // Handle irregular plurals
-        var irregulars = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-        {
-            { "person", "people" }, { "man", "men" }, { "woman", "women" },
-            { "child", "children" }, { "tooth", "teeth" }, { "foot", "feet" },
-            { "mouse", "mice" }, { "goose", "geese" }, { "ox", "oxen" },
-            { "datum", "data" }, { "criterion", "criteria" }, { "phenomenon", "phenomena" }
-        };
-
-        if (irregulars.TryGetValue(word, out var plural))
-            return PreserveCase(word, plural);
+        // Check dictionary first
+        if (EnglishIrregulars.Instance.TryGetPlural(word, out var plural))
+            return PreserveCase(word, plural!);
 
         // Handle words ending in consonant + y
         if (word.EndsWith("y", StringComparison.OrdinalIgnoreCase) && !EndsWithVowelPlusY(word))
@@ -185,6 +231,10 @@ public class PluralizerService
 
     private static string SingularizePortuguese(string word)
     {
+        // Check dictionary first
+        if (PortugueseIrregulars.Instance.TryGetSingular(word, out var singular))
+            return PreserveCase(word, singular!);
+
         // Handle plural endings
         if (word.EndsWith("ões", StringComparison.OrdinalIgnoreCase))
             return word[..^3] + "ão";
@@ -218,6 +268,10 @@ public class PluralizerService
 
     private static string PluralizePortuguese(string word)
     {
+        // Check dictionary first
+        if (PortugueseIrregulars.Instance.TryGetPlural(word, out var plural))
+            return PreserveCase(word, plural!);
+
         // Handle words ending in ão
         if (word.EndsWith("ão", StringComparison.OrdinalIgnoreCase))
             return word[..^2] + "ões";
@@ -256,6 +310,10 @@ public class PluralizerService
 
     private static string SingularizeSpanish(string word)
     {
+        // Check dictionary first
+        if (SpanishIrregulars.Instance.TryGetSingular(word, out var singular))
+            return PreserveCase(word, singular!);
+
         if (word.EndsWith("ces", StringComparison.OrdinalIgnoreCase))
             return word[..^3] + "z";
 
@@ -270,6 +328,10 @@ public class PluralizerService
 
     private static string PluralizeSpanish(string word)
     {
+        // Check dictionary first
+        if (SpanishIrregulars.Instance.TryGetPlural(word, out var plural))
+            return PreserveCase(word, plural!);
+
         // Words ending in z -> ces
         if (word.EndsWith("z", StringComparison.OrdinalIgnoreCase))
             return word[..^1] + "ces";
@@ -294,6 +356,10 @@ public class PluralizerService
 
     private static string SingularizeFrench(string word)
     {
+        // Check dictionary first
+        if (FrenchIrregulars.Instance.TryGetSingular(word, out var singular))
+            return PreserveCase(word, singular!);
+
         if (word.EndsWith("aux", StringComparison.OrdinalIgnoreCase))
             return word[..^2] + "l";
 
@@ -312,6 +378,10 @@ public class PluralizerService
 
     private static string PluralizeFrench(string word)
     {
+        // Check dictionary first
+        if (FrenchIrregulars.Instance.TryGetPlural(word, out var plural))
+            return PreserveCase(word, plural!);
+
         // Words ending in -al -> -aux
         if (word.EndsWith("al", StringComparison.OrdinalIgnoreCase))
             return word[..^2] + "aux";
@@ -337,6 +407,10 @@ public class PluralizerService
 
     private static string SingularizeGerman(string word)
     {
+        // Check dictionary first
+        if (GermanIrregulars.Instance.TryGetSingular(word, out var singular))
+            return PreserveCase(word, singular!);
+
         // German plural forms are complex - use conservative approach
         // Only handle clear patterns to avoid false positives
         
@@ -353,6 +427,10 @@ public class PluralizerService
 
     private static string PluralizeGerman(string word)
     {
+        // Check dictionary first
+        if (GermanIrregulars.Instance.TryGetPlural(word, out var plural))
+            return PreserveCase(word, plural!);
+
         // German pluralization is complex - simplified rules for common patterns
         // Words ending in -e often add -n
         if (word.EndsWith("e", StringComparison.OrdinalIgnoreCase))
@@ -378,13 +456,17 @@ public class PluralizerService
 
     private static string SingularizeItalian(string word)
     {
+        // Check dictionary first
+        if (ItalianIrregulars.Instance.TryGetSingular(word, out var singular))
+            return PreserveCase(word, singular!);
+
         // Italian singularization - only handle clear patterns
         // Masculine plural -i -> singular -o (like libri -> libro)
         if (word.EndsWith("i", StringComparison.OrdinalIgnoreCase) && word.Length > 2)
         {
             // Only apply if it looks like a masculine plural
-            var singular = word[..^1] + "o";
-            return singular;
+            var singularResult = word[..^1] + "o";
+            return singularResult;
         }
 
         // Feminine plural -e from -a is ambiguous, leave as is
@@ -393,6 +475,10 @@ public class PluralizerService
 
     private static string PluralizeItalian(string word)
     {
+        // Check dictionary first
+        if (ItalianIrregulars.Instance.TryGetPlural(word, out var plural))
+            return PreserveCase(word, plural!);
+
         // Masculine words ending in -o -> -i
         if (word.EndsWith("o", StringComparison.OrdinalIgnoreCase))
             return word[..^1] + "i";
@@ -414,6 +500,10 @@ public class PluralizerService
 
     private static string SingularizeDutch(string word)
     {
+        // Check dictionary first
+        if (DutchIrregulars.Instance.TryGetSingular(word, out var singular))
+            return PreserveCase(word, singular!);
+
         if (word.EndsWith("en", StringComparison.OrdinalIgnoreCase))
             return word[..^2];
 
@@ -425,6 +515,10 @@ public class PluralizerService
 
     private static string PluralizeDutch(string word)
     {
+        // Check dictionary first
+        if (DutchIrregulars.Instance.TryGetPlural(word, out var plural))
+            return PreserveCase(word, plural!);
+
         // Words ending in certain patterns get -en
         if (word.EndsWith("el", StringComparison.OrdinalIgnoreCase) ||
             word.EndsWith("em", StringComparison.OrdinalIgnoreCase) ||
@@ -441,6 +535,10 @@ public class PluralizerService
 
     private static string SingularizeRussian(string word)
     {
+        // Check dictionary first
+        if (RussianIrregulars.Instance.TryGetSingular(word, out var singular))
+            return PreserveCase(word, singular!);
+
         // Simplified Russian singularization
         if (word.EndsWith("ы", StringComparison.OrdinalIgnoreCase) ||
             word.EndsWith("и", StringComparison.OrdinalIgnoreCase))
@@ -455,6 +553,10 @@ public class PluralizerService
 
     private static string PluralizeRussian(string word)
     {
+        // Check dictionary first
+        if (RussianIrregulars.Instance.TryGetPlural(word, out var plural))
+            return PreserveCase(word, plural!);
+
         // Simplified Russian pluralization
         if (word.EndsWith("а", StringComparison.OrdinalIgnoreCase))
             return word[..^1] + "ы";
@@ -475,6 +577,10 @@ public class PluralizerService
 
     private static string SingularizePolish(string word)
     {
+        // Check dictionary first
+        if (PolishIrregulars.Instance.TryGetSingular(word, out var singular))
+            return PreserveCase(word, singular!);
+
         if (word.EndsWith("y", StringComparison.OrdinalIgnoreCase) ||
             word.EndsWith("i", StringComparison.OrdinalIgnoreCase))
             return word[..^1];
@@ -484,6 +590,10 @@ public class PluralizerService
 
     private static string PluralizePolish(string word)
     {
+        // Check dictionary first
+        if (PolishIrregulars.Instance.TryGetPlural(word, out var plural))
+            return PreserveCase(word, plural!);
+
         // Simplified Polish pluralization
         if (word.EndsWith("a", StringComparison.OrdinalIgnoreCase))
             return word[..^1] + "y";
@@ -497,6 +607,10 @@ public class PluralizerService
 
     private static string SingularizeTurkish(string word)
     {
+        // Check dictionary first
+        if (TurkishIrregulars.Instance.TryGetSingular(word, out var singular))
+            return PreserveCase(word, singular!);
+
         // Turkish uses -lar/-ler for plural
         if (word.EndsWith("lar", StringComparison.OrdinalIgnoreCase) ||
             word.EndsWith("ler", StringComparison.OrdinalIgnoreCase))
@@ -507,6 +621,10 @@ public class PluralizerService
 
     private static string PluralizeTurkish(string word)
     {
+        // Check dictionary first
+        if (TurkishIrregulars.Instance.TryGetPlural(word, out var plural))
+            return PreserveCase(word, plural!);
+
         // Turkish vowel harmony: back vowels use -lar, front vowels use -ler
         var lastVowel = GetLastVowel(word);
         if (lastVowel is 'a' or 'ı' or 'o' or 'u')

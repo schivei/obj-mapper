@@ -25,8 +25,9 @@ public class DapperGenerator : ICodeGenerator
     public Dictionary<string, string> GenerateEntities(DatabaseSchema schema)
     {
         var entities = new Dictionary<string, string>();
+        var filteredTables = FilterDuplicateTables(schema.Tables);
 
-        foreach (var table in schema.Tables)
+        foreach (var table in filteredTables)
         {
             var entityName = NamingHelper.ToEntityName(table.Name);
             var code = GenerateEntityClass(table);
@@ -40,8 +41,9 @@ public class DapperGenerator : ICodeGenerator
     {
         // For Dapper, we generate repository classes instead of EF configurations
         var repositories = new Dictionary<string, string>();
+        var filteredTables = FilterDuplicateTables(schema.Tables);
 
-        foreach (var table in schema.Tables)
+        foreach (var table in filteredTables)
         {
             var entityName = NamingHelper.ToEntityName(table.Name);
             var code = GenerateRepositoryClass(table);
@@ -54,6 +56,7 @@ public class DapperGenerator : ICodeGenerator
     public string GenerateDbContext(DatabaseSchema schema, string contextName)
     {
         var sb = new StringBuilder();
+        var filteredTables = FilterDuplicateTables(schema.Tables);
         
         sb.AppendLine("using System.Data;");
         sb.AppendLine(GetConnectionUsing());
@@ -88,7 +91,7 @@ public class DapperGenerator : ICodeGenerator
         sb.AppendLine();
 
         // Generate repository properties
-        foreach (var table in schema.Tables)
+        foreach (var table in filteredTables)
         {
             var entityName = NamingHelper.ToEntityName(table.Name);
             var repositoryField = $"_{NamingHelper.ToCamelCase(entityName)}Repository";
@@ -108,6 +111,50 @@ public class DapperGenerator : ICodeGenerator
         sb.AppendLine("}");
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Filters tables to remove duplicates where both singular and plural versions exist.
+    /// When duplicates are found, the pluralized version is kept.
+    /// </summary>
+    /// <param name="tables">List of tables to filter.</param>
+    /// <returns>Filtered list of tables.</returns>
+    private static List<TableInfo> FilterDuplicateTables(List<TableInfo> tables)
+    {
+        // Group tables by their entity name (which singularizes the table name)
+        var entityGroups = tables
+            .GroupBy(t => NamingHelper.ToEntityName(t.Name), StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var result = new List<TableInfo>();
+
+        foreach (var group in entityGroups)
+        {
+            if (group.Count() == 1)
+            {
+                // No duplicate, just add the table
+                result.Add(group.First());
+            }
+            else
+            {
+                // Multiple tables map to the same entity name
+                // Prefer the pluralized version (the one where table name != entity name)
+                var pluralizedTable = group.FirstOrDefault(t => 
+                    !t.Name.Equals(NamingHelper.ToEntityName(t.Name), StringComparison.OrdinalIgnoreCase));
+                
+                if (pluralizedTable != null)
+                {
+                    result.Add(pluralizedTable);
+                }
+                else
+                {
+                    // If no pluralized version found, just take the first one
+                    result.Add(group.First());
+                }
+            }
+        }
+
+        return result;
     }
 
     private string GenerateEntityClass(TableInfo table)

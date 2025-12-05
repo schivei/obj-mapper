@@ -54,9 +54,7 @@ public class DapperGenerator : ICodeGenerator
         var sb = new StringBuilder();
         
         sb.AppendLine("using System.Data;");
-        sb.AppendLine("using Microsoft.Data.SqlClient;");
-        sb.AppendLine("using MySqlConnector;");
-        sb.AppendLine("using Npgsql;");
+        sb.AppendLine(GetConnectionUsing());
         sb.AppendLine();
         sb.AppendLine($"namespace {_namespace};");
         sb.AppendLine();
@@ -310,9 +308,22 @@ public class DapperGenerator : ICodeGenerator
             DatabaseType.MySql => "new MySqlConnection(_connectionString)",
             DatabaseType.PostgreSql => "new NpgsqlConnection(_connectionString)",
             DatabaseType.SqlServer => "new SqlConnection(_connectionString)",
-            DatabaseType.Oracle => "new SqlConnection(_connectionString)", // Simplified
-            DatabaseType.Sqlite => "new SqlConnection(_connectionString)", // Simplified
+            DatabaseType.Oracle => "new OracleConnection(_connectionString)",
+            DatabaseType.Sqlite => "new SqliteConnection(_connectionString)",
             _ => "new SqlConnection(_connectionString)"
+        };
+    }
+
+    private string GetConnectionUsing()
+    {
+        return _databaseType switch
+        {
+            DatabaseType.MySql => "using MySqlConnector;",
+            DatabaseType.PostgreSql => "using Npgsql;",
+            DatabaseType.SqlServer => "using Microsoft.Data.SqlClient;",
+            DatabaseType.Oracle => "using Oracle.ManagedDataAccess.Client;",
+            DatabaseType.Sqlite => "using Microsoft.Data.Sqlite;",
+            _ => "using Microsoft.Data.SqlClient;"
         };
     }
 }

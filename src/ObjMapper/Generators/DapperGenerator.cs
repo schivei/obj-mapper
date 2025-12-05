@@ -74,6 +74,7 @@ public class DapperGenerator : ICodeGenerator
         sb.AppendLine($"    public {contextName}(string connectionString)");
         sb.AppendLine("    {");
         sb.AppendLine("        _connectionString = connectionString;");
+        sb.AppendLine("        OnContextCreatedPartial();");
         sb.AppendLine("    }");
         sb.AppendLine();
         sb.AppendLine("    public IDbConnection Connection");
@@ -84,6 +85,7 @@ public class DapperGenerator : ICodeGenerator
         sb.AppendLine("            {");
         sb.AppendLine($"                _connection = {GetConnectionCreation()};");
         sb.AppendLine("                _connection.Open();");
+        sb.AppendLine("                OnConnectionCreatedPartial(_connection);");
         sb.AppendLine("            }");
         sb.AppendLine("            return _connection;");
         sb.AppendLine("        }");
@@ -109,6 +111,17 @@ public class DapperGenerator : ICodeGenerator
         sb.AppendLine("        _connection = null;");
         sb.AppendLine("        GC.SuppressFinalize(this);");
         sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// Called after the context is created. Override to add custom initialization.");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    partial void OnContextCreatedPartial();");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// Called after the connection is created and opened. Override to configure the connection.");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    /// <param name=\"connection\">The opened database connection.</param>");
+        sb.AppendLine("    partial void OnConnectionCreatedPartial(IDbConnection connection);");
         sb.AppendLine("}");
 
         return sb.ToString();

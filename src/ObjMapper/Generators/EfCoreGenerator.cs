@@ -87,7 +87,11 @@ public class EfCoreGenerator : ICodeGenerator
             sb.AppendLine($"        modelBuilder.ApplyConfiguration(new {entityName}Configuration());");
         }
 
+        sb.AppendLine();
+        sb.AppendLine("        OnModelCreatingPartial(modelBuilder);");
         sb.AppendLine("    }");
+        sb.AppendLine();
+        sb.AppendLine("    partial void OnModelCreatingPartial(ModelBuilder modelBuilder);");
         sb.AppendLine("}");
 
         return sb.ToString();

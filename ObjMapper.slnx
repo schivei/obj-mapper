@@ -1,9 +1,19 @@
 <Solution>
+  <Folder Name="/.sln/">
+    <File Path=".config/dotnet-tools.json" />
+    <File Path=".github/dependabot.yml" />
+    <File Path=".github/workflows/ci.yml" />
+    <File Path=".github/workflows/codeql.yml" />
+    <File Path=".github/workflows/release.yml" />
+    <File Path=".gitignore" />
+    <File Path="LICENSE" />
+    <File Path="README.md" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/ObjMapper/ObjMapper.csproj" />
   </Folder>
   <Folder Name="/tests/">
-    <Project Path="tests/ObjMapper.Tests/ObjMapper.Tests.csproj" />
     <Project Path="tests/ObjMapper.IntegrationTests/ObjMapper.IntegrationTests.csproj" />
+    <Project Path="tests/ObjMapper.Tests/ObjMapper.Tests.csproj" />
   </Folder>
 </Solution>

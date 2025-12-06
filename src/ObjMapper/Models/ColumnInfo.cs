@@ -11,4 +11,16 @@ public class ColumnInfo
     public bool Nullable { get; set; }
     public string Type { get; set; } = string.Empty;
     public string Comment { get; set; } = string.Empty;
+    
+    /// <summary>
+    /// Indicates if this column was inferred to be a boolean type based on data analysis.
+    /// This is set when using connection string mode with type inference enabled.
+    /// </summary>
+    public bool InferredAsBoolean { get; set; }
+    
+    /// <summary>
+    /// Indicates if this column was inferred to be a GUID type based on data analysis.
+    /// This is set when using connection string mode with type inference enabled.
+    /// </summary>
+    public bool InferredAsGuid { get; set; }
 }

@@ -1,0 +1,218 @@
+name: Auto Version
+
+on:
+  pull_request:
+    types: [opened, synchronize, labeled, unlabeled]
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: read
+
+env:
+  DOTNET_VERSION: '10.0.x'
+
+jobs:
+  # Create pre-release tag on every PR push
+  prerelease-tag:
+    name: Create Pre-release Tag
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: write
+      pull-requests: read
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Get latest tag
+      id: get_latest_tag
+      run: |
+        # Get the latest tag
+        LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+        echo "LATEST_TAG=$LATEST_TAG" >> $GITHUB_OUTPUT
+        
+        # Parse version components
+        VERSION=${LATEST_TAG#v}
+        
+        # Handle pre-release suffix
+        if [[ $VERSION == *-* ]]; then
+          BASE_VERSION=$(echo $VERSION | cut -d'-' -f1)
+          PRERELEASE=$(echo $VERSION | cut -d'-' -f2-)
+        else
+          BASE_VERSION=$VERSION
+          PRERELEASE=""
+        fi
+        
+        IFS='.' read -ra VERSION_PARTS <<< "$BASE_VERSION"
+        MAJOR=${VERSION_PARTS[0]:-0}
+        MINOR=${VERSION_PARTS[1]:-0}
+        PATCH=${VERSION_PARTS[2]:-0}
+        
+        echo "MAJOR=$MAJOR" >> $GITHUB_OUTPUT
+        echo "MINOR=$MINOR" >> $GITHUB_OUTPUT
+        echo "PATCH=$PATCH" >> $GITHUB_OUTPUT
+        echo "BASE_VERSION=$BASE_VERSION" >> $GITHUB_OUTPUT
+        
+    - name: Get branch name
+      id: branch_name
+      run: |
+        # Sanitize branch name for use in version suffix
+        BRANCH_NAME="${{ github.head_ref }}"
+        SAFE_BRANCH=$(echo "$BRANCH_NAME" | sed 's/[^a-zA-Z0-9]/-/g' | cut -c1-20)
+        echo "SAFE_BRANCH=$SAFE_BRANCH" >> $GITHUB_OUTPUT
+        
+    - name: Calculate pre-release version
+      id: calc_version
+      run: |
+        MAJOR=${{ steps.get_latest_tag.outputs.MAJOR }}
+        MINOR=${{ steps.get_latest_tag.outputs.MINOR }}
+        PATCH=${{ steps.get_latest_tag.outputs.PATCH }}
+        BRANCH=${{ steps.branch_name.outputs.SAFE_BRANCH }}
+        RUN_NUMBER=${{ github.run_number }}
+        
+        # Pre-release version: current version + branch name + run number
+        PRERELEASE_VERSION="${MAJOR}.${MINOR}.${PATCH}-${BRANCH}.${RUN_NUMBER}"
+        echo "PRERELEASE_VERSION=$PRERELEASE_VERSION" >> $GITHUB_OUTPUT
+        echo "Pre-release version: $PRERELEASE_VERSION"
+        
+    - name: Create pre-release tag
+      run: |
+        VERSION=${{ steps.calc_version.outputs.PRERELEASE_VERSION }}
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        # Delete existing tag if exists (for re-runs)
+        git tag -d "v$VERSION" 2>/dev/null || true
+        git push origin ":refs/tags/v$VERSION" 2>/dev/null || true
+        
+        # Create new tag
+        git tag -a "v$VERSION" -m "Pre-release v$VERSION from PR #${{ github.event.pull_request.number }}"
+        git push origin "v$VERSION"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Create release version on merge to main
+  release-version:
+    name: Create Release Version
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+      pull-requests: read
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+        
+    - name: Get merged PR info
+      id: pr_info
+      uses: actions/github-script@v7
+      with:
+        script: |
+          // Get the commit that was just pushed
+          const sha = context.sha;
+          
+          // Find PRs associated with this commit
+          const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            commit_sha: sha
+          });
+          
+          if (prs.length === 0) {
+            console.log('No PR associated with this commit');
+            core.setOutput('has_major_label', 'false');
+            core.setOutput('prerelease_count', '0');
+            return;
+          }
+          
+          const pr = prs[0];
+          console.log(`Found PR #${pr.number}: ${pr.title}`);
+          
+          // Check for 'major' label
+          const labels = pr.labels.map(l => l.name.toLowerCase());
+          const hasMajorLabel = labels.includes('major');
+          console.log(`Has 'major' label: ${hasMajorLabel}`);
+          core.setOutput('has_major_label', hasMajorLabel.toString());
+          
+          // Count pre-release tags from this PR's branch
+          core.setOutput('pr_number', pr.number.toString());
+          
+    - name: Get latest stable tag
+      id: get_latest_tag
+      run: |
+        # Get all tags and filter for stable versions (no pre-release suffix)
+        LATEST_STABLE=$(git tag -l 'v*' | grep -v '-' | sort -V | tail -1 || echo "v0.0.0")
+        echo "LATEST_STABLE=$LATEST_STABLE" >> $GITHUB_OUTPUT
+        
+        VERSION=${LATEST_STABLE#v}
+        IFS='.' read -ra VERSION_PARTS <<< "$VERSION"
+        MAJOR=${VERSION_PARTS[0]:-0}
+        MINOR=${VERSION_PARTS[1]:-0}
+        PATCH=${VERSION_PARTS[2]:-0}
+        
+        echo "MAJOR=$MAJOR" >> $GITHUB_OUTPUT
+        echo "MINOR=$MINOR" >> $GITHUB_OUTPUT
+        echo "PATCH=$PATCH" >> $GITHUB_OUTPUT
+        
+    - name: Count pre-release versions
+      id: count_prereleases
+      run: |
+        # Count pre-release tags since last stable
+        LATEST_STABLE=${{ steps.get_latest_tag.outputs.LATEST_STABLE }}
+        
+        if [ "$LATEST_STABLE" = "v0.0.0" ]; then
+          COUNT=$(git tag -l 'v*-*' | wc -l)
+        else
+          COUNT=$(git tag -l 'v*-*' --contains "$LATEST_STABLE" 2>/dev/null | wc -l || echo "1")
+        fi
+        
+        # Ensure at least 1 for the patch increment
+        COUNT=$((COUNT > 0 ? COUNT : 1))
+        echo "PRERELEASE_COUNT=$COUNT" >> $GITHUB_OUTPUT
+        echo "Pre-release count since $LATEST_STABLE: $COUNT"
+        
+    - name: Calculate new version
+      id: calc_version
+      run: |
+        MAJOR=${{ steps.get_latest_tag.outputs.MAJOR }}
+        MINOR=${{ steps.get_latest_tag.outputs.MINOR }}
+        PATCH=${{ steps.get_latest_tag.outputs.PATCH }}
+        HAS_MAJOR="${{ steps.pr_info.outputs.has_major_label }}"
+        PRERELEASE_COUNT=${{ steps.count_prereleases.outputs.PRERELEASE_COUNT }}
+        
+        if [ "$HAS_MAJOR" = "true" ]; then
+          # Major version bump - reset minor and patch
+          NEW_MAJOR=$((MAJOR + 1))
+          NEW_MINOR=0
+          NEW_PATCH=0
+          echo "Bumping MAJOR version (has 'major' label)"
+        else
+          # Minor version bump + patch = prerelease count
+          NEW_MAJOR=$MAJOR
+          NEW_MINOR=$((MINOR + 1))
+          NEW_PATCH=$PRERELEASE_COUNT
+          echo "Bumping MINOR version, PATCH = $PRERELEASE_COUNT (prerelease count)"
+        fi
+        
+        NEW_VERSION="${NEW_MAJOR}.${NEW_MINOR}.${NEW_PATCH}"
+        echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_OUTPUT
+        echo "New version: $NEW_VERSION"
+        
+    - name: Create release tag
+      run: |
+        VERSION=${{ steps.calc_version.outputs.NEW_VERSION }}
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        
+        git tag -a "v$VERSION" -m "Release v$VERSION"
+        git push origin "v$VERSION"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

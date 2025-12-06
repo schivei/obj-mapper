@@ -1,6 +1,6 @@
 # omap
 
-Database reverse engineering dotnet tool - generates entity mappings from CSV schema files or database connections for EF Core and Dapper. Features ML-based type inference, scalar UDF support, and automatic type converters.
+Database reverse engineering dotnet tool - generates entity mappings from CSV schema files or database connections for EF Core and Dapper. Features ML-based type inference, scalar UDF support, stored procedure mapping, and automatic type converters.
 
 [![Automatic Dependency Submission](https://github.com/schivei/obj-mapper/actions/workflows/dependency-graph/auto-submission/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/dependency-graph/auto-submission)
 [![CI](https://github.com/schivei/obj-mapper/actions/workflows/ci.yml/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/ci.yml)
@@ -15,12 +15,15 @@ Database reverse engineering dotnet tool - generates entity mappings from CSV sc
 
 - **Database Schema Extraction**: Extract schema directly from PostgreSQL, SQL Server, MySQL, SQLite databases
 - **ML-Based Type Inference**: Intelligent column type mapping using machine learning and pattern matching
+- **Stored Procedure Support**: Extract and generate code for stored procedures with output type detection (None, Scalar, Tabular)
 - **Scalar UDF Support**: Extract and generate code for user-defined scalar functions
+- **View Support**: Extract and generate entities for database views
 - **Type Converters**: Automatic generation of ValueConverters (EF Core) and TypeHandlers (Dapper) for DateOnly, TimeOnly, DateTimeOffset
 - **GUID Column Detection**: Automatically detect varchar(36) columns that contain GUIDs
 - **Boolean Column Detection**: Detect small integer columns (tinyint, smallint) that represent boolean values
 - **Relationship Mapping**: Full support for 1:1, 1:N, N:1, and N:M relationships
 - **Index Mapping**: Support for simple and composite indexes
+- **Performance Options**: `--no-checks` for faster extraction, `--no-views/--no-procs/--no-udfs` to skip unwanted objects
 
 ## Installation
 
@@ -106,6 +109,20 @@ When using a connection string, the schema is extracted directly from the databa
 - `--no-inference`: Disable ML-based type inference (enabled by default)
   - Type inference analyzes column names, types, and comments to determine the best C# type
   - Automatically detects boolean columns, GUIDs, and date/time types
+
+- `--no-checks`: Disable data sampling queries for type verification
+  - When set, type inference uses only column metadata (name, type, comment)
+  - Much faster schema extraction but may be less accurate for edge cases
+  - Name-based inference is still applied (e.g., `is_active` → bool)
+
+- `--no-views`: Disable view mapping
+  - Views will not be extracted from the database
+
+- `--no-procs`: Disable stored procedure mapping
+  - Stored procedures will not be extracted from the database
+
+- `--no-udfs`: Disable user-defined function mapping
+  - Scalar functions will not be extracted from the database
 
 ## Configuration
 
@@ -367,6 +384,88 @@ public partial class ScalarFunctionRepository(IDbConnection connection)
         return await connection.ExecuteScalarAsync<decimal>(
             "SELECT dbo.calculate_tax(@Amount, @Rate)",
             new { Amount = amount, Rate = rate });
+    }
+}
+```
+
+## Stored Procedures
+
+The tool extracts stored procedures from the database and generates appropriate code based on the detected output type:
+
+### Output Type Detection
+
+- **None**: Procedures that don't return any value
+- **Scalar**: Procedures with OUT parameters (returns single value)
+- **Tabular**: Procedures that return result sets (SELECT statements)
+
+### EF Core
+
+Generates DbContext extension methods:
+
+```csharp
+public static partial class StoredProcedureExtensions
+{
+    // Void procedure (no output)
+    public static void CleanupOldData(this DbContext context, DateTime olderThan)
+    {
+        context.Database.ExecuteSqlRaw("EXEC dbo.CleanupOldData @OlderThan", 
+            new SqlParameter("@OlderThan", olderThan));
+    }
+    
+    public static async Task CleanupOldDataAsync(this DbContext context, DateTime olderThan, 
+        CancellationToken cancellationToken = default)
+    {
+        await context.Database.ExecuteSqlRawAsync("EXEC dbo.CleanupOldData @OlderThan", 
+            new SqlParameter("@OlderThan", olderThan), cancellationToken);
+    }
+    
+    // Tabular procedure (returns result set)
+    public static List<GetOrdersByDateResult> GetOrdersByDate(this DbContext context, DateTime orderDate)
+    {
+        return context.Set<GetOrdersByDateResult>()
+            .FromSqlRaw("EXEC dbo.GetOrdersByDate @OrderDate", 
+                new SqlParameter("@OrderDate", orderDate))
+            .ToList();
+    }
+}
+
+// Result type for tabular procedures
+[Keyless]
+public class GetOrdersByDateResult
+{
+    public int OrderId { get; set; }
+    public DateTime OrderDate { get; set; }
+    public decimal TotalAmount { get; set; }
+}
+```
+
+### Dapper
+
+Generates IDbConnection extension methods:
+
+```csharp
+public static partial class StoredProcedureExtensions
+{
+    // Void procedure
+    public static void CleanupOldData(this IDbConnection connection, DateTime olderThan)
+    {
+        connection.Execute("dbo.CleanupOldData", new { olderThan }, 
+            commandType: CommandType.StoredProcedure);
+    }
+    
+    // Tabular procedure
+    public static IEnumerable<GetOrdersByDateResult> GetOrdersByDate(
+        this IDbConnection connection, DateTime orderDate)
+    {
+        return connection.Query<GetOrdersByDateResult>("dbo.GetOrdersByDate", 
+            new { orderDate }, commandType: CommandType.StoredProcedure);
+    }
+    
+    public static async Task<IEnumerable<GetOrdersByDateResult>> GetOrdersByDateAsync(
+        this IDbConnection connection, DateTime orderDate)
+    {
+        return await connection.QueryAsync<GetOrdersByDateResult>("dbo.GetOrdersByDate", 
+            new { orderDate }, commandType: CommandType.StoredProcedure);
     }
 }
 ```

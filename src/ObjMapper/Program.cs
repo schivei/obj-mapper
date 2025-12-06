@@ -246,6 +246,26 @@ var noInferenceOption = new Option<bool>("--no-inference")
     Description = "Disable type inference for column type mapping. Type inference is enabled by default and analyzes column names, comments, and data to determine best C# types (e.g., char(36) -> Guid, tinyint with 0/1 values -> bool)."
 };
 
+var noChecksOption = new Option<bool>("--no-checks")
+{
+    Description = "Disable data sampling queries for type verification. When set, type inference uses only column metadata (name, type, comment) which is much faster but may be less accurate for edge cases."
+};
+
+var noViewsOption = new Option<bool>("--no-views")
+{
+    Description = "Disable view mapping. Views will not be extracted from the database."
+};
+
+var noProcsOption = new Option<bool>("--no-procs")
+{
+    Description = "Disable stored procedure mapping. Stored procedures will not be extracted from the database."
+};
+
+var noUdfsOption = new Option<bool>("--no-udfs")
+{
+    Description = "Disable user-defined function mapping. Scalar functions will not be extracted from the database."
+};
+
 // Add validation for required inputs
 rootCommand.Validators.Add(result =>
 {
@@ -282,6 +302,10 @@ rootCommand.Options.Add(entityModeOption);
 rootCommand.Options.Add(localeOption);
 rootCommand.Options.Add(noPluralizeOption);
 rootCommand.Options.Add(noInferenceOption);
+rootCommand.Options.Add(noChecksOption);
+rootCommand.Options.Add(noViewsOption);
+rootCommand.Options.Add(noProcsOption);
+rootCommand.Options.Add(noUdfsOption);
 
 // Set handler
 rootCommand.SetAction(async (parseResult, cancellationToken) =>
@@ -301,7 +325,11 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         EntityMode = parseResult.GetValue(entityModeOption)!,
         Locale = parseResult.GetValue(localeOption)!,
         NoPluralizer = parseResult.GetValue(noPluralizeOption),
-        NoInference = parseResult.GetValue(noInferenceOption)
+        NoInference = parseResult.GetValue(noInferenceOption),
+        NoChecks = parseResult.GetValue(noChecksOption),
+        NoViews = parseResult.GetValue(noViewsOption),
+        NoProcs = parseResult.GetValue(noProcsOption),
+        NoUdfs = parseResult.GetValue(noUdfsOption)
     };
 
     await ExecuteAsync(options);
@@ -375,9 +403,11 @@ static async Task ExecuteAsync(CommandOptions options)
                 }
                 console.WriteSuccess("Database connection successful!");
                 
+                var extractionOptions = SchemaExtractionOptions.FromCommandOptions(options);
+                
                 schema = await console.WithSpinnerAsync("Extracting schema from database...", async () =>
                 {
-                    return await extractor.ExtractSchemaAsync(options.ConnectionString!, options.SchemaFilter, options.UseTypeInference);
+                    return await extractor.ExtractSchemaAsync(options.ConnectionString!, extractionOptions);
                 });
                 
                 var totalIndexes = schema.Tables.Sum(t => t.Indexes.Count);
@@ -386,7 +416,8 @@ static async Task ExecuteAsync(CommandOptions options)
                     ["Tables"] = schema.Tables.Count,
                     ["Relationships"] = schema.Relationships.Count,
                     ["Indexes"] = totalIndexes,
-                    ["Scalar Functions"] = schema.ScalarFunctions.Count
+                    ["Scalar Functions"] = schema.ScalarFunctions.Count,
+                    ["Stored Procedures"] = schema.StoredProcedures.Count
                 };
                 
                 if (options.UseTypeInference)
@@ -536,6 +567,8 @@ static async Task ExecuteAsync(CommandOptions options)
         totalFiles += configurations.Count;
         var scalarFunctions = generator.GenerateScalarFunctions(schema);
         totalFiles += scalarFunctions.Count;
+        var storedProceduresDict = generator.GenerateStoredProcedures(schema);
+        totalFiles += storedProceduresDict.Count;
         totalFiles += 1; // DbContext
         
         var currentStep = 0;
@@ -574,6 +607,16 @@ static async Task ExecuteAsync(CommandOptions options)
             {
                 currentStep++;
                 updateProgress(currentStep, $"Functions: {fileName}");
+                var filePath = Path.Combine(options.OutputDir.FullName, fileName);
+                await File.WriteAllTextAsync(filePath, content);
+                filesGenerated++;
+            }
+            
+            // Generate stored procedures if any
+            foreach (var (fileName, content) in storedProceduresDict)
+            {
+                currentStep++;
+                updateProgress(currentStep, $"Procedures: {fileName}");
                 var filePath = Path.Combine(options.OutputDir.FullName, fileName);
                 await File.WriteAllTextAsync(filePath, content);
                 filesGenerated++;

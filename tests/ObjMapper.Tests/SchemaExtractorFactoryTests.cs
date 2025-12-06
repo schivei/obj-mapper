@@ -1,5 +1,6 @@
 using ObjMapper.Models;
 using ObjMapper.Services;
+using ObjMapper.Services.Extractors;
 
 namespace ObjMapper.Tests;
 

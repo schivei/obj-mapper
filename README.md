@@ -1,6 +1,29 @@
 # omap
 
-Database reverse engineering dotnet tool - generates entity mappings from CSV schema files for EF Core and Dapper.
+Database reverse engineering dotnet tool - generates entity mappings from CSV schema files or database connections for EF Core and Dapper. Features ML-based type inference, scalar UDF support, stored procedure mapping, and automatic type converters.
+
+[![Automatic Dependency Submission](https://github.com/schivei/obj-mapper/actions/workflows/dependency-graph/auto-submission/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/dependency-graph/auto-submission)
+[![CI](https://github.com/schivei/obj-mapper/actions/workflows/ci.yml/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/schivei/obj-mapper/actions/workflows/codeql.yml/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/codeql.yml)
+[![Copilot code review](https://github.com/schivei/obj-mapper/actions/workflows/copilot-pull-request-reviewer/copilot-pull-request-reviewer/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/copilot-pull-request-reviewer/copilot-pull-request-reviewer)
+[![Copilot coding agent](https://github.com/schivei/obj-mapper/actions/workflows/copilot-swe-agent/copilot/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/copilot-swe-agent/copilot)
+[![Release](https://github.com/schivei/obj-mapper/actions/workflows/release.yml/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/release.yml)
+[![NuGet](https://img.shields.io/nuget/v/ObjMapper?style=flat)](https://www.nuget.org/packages/ObjMapper/)
+![GitHub Pre-Release](https://img.shields.io/github/v/release/schivei/obj-mapper?include_prereleases)
+
+## Features
+
+- **Database Schema Extraction**: Extract schema directly from PostgreSQL, SQL Server, MySQL, SQLite databases
+- **ML-Based Type Inference**: Intelligent column type mapping using machine learning and pattern matching
+- **Stored Procedure Support**: Extract and generate code for stored procedures with output type detection (None, Scalar, Tabular)
+- **Scalar UDF Support**: Extract and generate code for user-defined scalar functions
+- **View Support**: Extract and generate entities for database views
+- **Type Converters**: Automatic generation of ValueConverters (EF Core) and TypeHandlers (Dapper) for DateOnly, TimeOnly, DateTimeOffset
+- **GUID Column Detection**: Automatically detect varchar(36) columns that contain GUIDs
+- **Boolean Column Detection**: Detect small integer columns (tinyint, smallint) that represent boolean values
+- **Relationship Mapping**: Full support for 1:1, 1:N, N:1, and N:M relationships
+- **Index Mapping**: Support for simple and composite indexes
+- **Performance Options**: `--no-checks` for faster extraction, `--no-views/--no-procs/--no-udfs` to skip unwanted objects
 
 ## Installation
 
@@ -82,6 +105,34 @@ When using a connection string, the schema is extracted directly from the databa
   - Supported locales: `en-us`, `en-gb`, `en`, `pt-br`, `pt-pt`, `pt`, `es-es`, `es-mx`, `es`, `fr-fr`, `fr-ca`, `fr`, `de-de`, `de`, `it-it`, `it`, `nl-nl`, `nl`, `ru-ru`, `ru`, `pl-pl`, `pl`, `tr-tr`, `tr`, `ja-jp`, `ja`, `ko-kr`, `ko`, `zh-cn`, `zh-tw`, `zh`
 
 - `--no-pluralize`: Disable pluralization/singularization
+
+- `--no-inference`: Disable ML-based type inference (enabled by default)
+  - Type inference analyzes column names, types, and comments to determine the best C# type
+  - Automatically detects boolean columns, GUIDs, and date/time types
+
+- `--no-checks`: Disable data sampling queries for type verification
+  - When set, type inference uses only column metadata (name, type, comment)
+  - Much faster schema extraction but may be less accurate for edge cases
+  - Name-based inference is still applied (e.g., `is_active` → bool)
+
+- `--no-views`: Disable view mapping
+  - Views will not be extracted from the database
+
+- `--no-procs`: Disable stored procedure mapping
+  - Stored procedures will not be extracted from the database
+
+- `--no-udfs`: Disable user-defined function mapping
+  - Scalar functions will not be extracted from the database
+
+- `--no-rel`: Disable relationship mapping
+  - Foreign key relationships will not be extracted
+  - Cannot be used together with `--legacy`
+
+- `--legacy`: Enable legacy relationship inference
+  - Infers relationships from column/table naming patterns when no foreign keys exist
+  - Detects patterns: `user_id` → `users` table, `fk_customer` → `customer` table
+  - Supports singular/plural table name matching
+  - Cannot be used together with `--no-rel`
 
 ## Configuration
 
@@ -250,8 +301,238 @@ output/
 │   ├── OrderConfiguration.cs     # EF Core only
 │   ├── UserRepository.cs         # Dapper only
 │   └── OrderRepository.cs        # Dapper only
+├── Converters/                   # Generated when using DateOnly, TimeOnly, DateTimeOffset
+│   ├── DateOnlyConverter.cs      # EF Core ValueConverter
+│   ├── TimeOnlyConverter.cs      # EF Core ValueConverter
+│   ├── DateTimeOffsetConverter.cs # EF Core ValueConverter
+│   └── DapperTypeHandlers.cs     # Dapper TypeHandlers + registration
+├── Functions/                    # Generated when scalar UDFs exist
+│   ├── ScalarFunctions.cs        # EF Core [DbFunction] stubs
+│   └── ScalarFunctionRepository.cs # Dapper ExecuteScalar wrappers
 └── AppDbContext.cs
 ```
+
+## Type Inference
+
+Type inference is enabled by default and uses ML.NET combined with pattern matching to determine the best C# type for each column. Use `--no-inference` to disable.
+
+### Pattern-Based Inference
+
+The tool recognizes common column naming patterns:
+
+| Pattern | Inferred Type |
+|---------|---------------|
+| `is_*`, `has_*`, `*_flag`, `active`, `enabled`, `deleted` | `bool` |
+| `uuid`, `*_guid`, `*_uuid`, `correlation_id`, `tracking_id` | `Guid` |
+| `*_at`, `*_date`, `created`, `updated`, `deleted_at` | `DateTime` / `DateOnly` |
+| `*_time` | `TimeOnly` |
+
+### Boolean Column Detection (Connection String Mode)
+
+When using `--connection-string` (or `--cs`), the tool queries small integer columns (tinyint, smallint, bit) to check if they only contain NULL, 0, or 1 values. If so, they are mapped to `bool`.
+
+```sql
+-- Example: Column "is_active TINYINT" with values {0, 1} → bool
+-- The tool runs: SELECT DISTINCT is_active FROM users WHERE is_active IS NOT NULL
+```
+
+### GUID Column Detection (Connection String Mode)
+
+When using `--connection-string` (or `--cs`), varchar(36) and char(36) columns are analyzed for valid GUID values:
+- Requires at least 10 valid GUID values
+- Must not contain any blank or whitespace-only values
+- If conditions are met, the column is mapped to `Guid`
+
+```csharp
+// Column "tracking_id VARCHAR(36)" with valid GUIDs → Guid
+public Guid TrackingId { get; set; }
+```
+
+### CSV Mode
+
+In CSV mode, `char(36)` columns are automatically mapped to `Guid`. Additional inference based on column names is still applied.
+
+## Scalar User-Defined Functions
+
+The tool extracts scalar user-defined functions (UDFs) from the database and generates appropriate code:
+
+### EF Core
+
+Generates static methods with `[DbFunction]` attribute:
+
+```csharp
+public static partial class ScalarFunctions
+{
+    [DbFunction("calculate_tax", "dbo")]
+    public static decimal CalculateTax(decimal amount, decimal rate)
+        => throw new NotSupportedException("This method is for use in LINQ queries only.");
+}
+```
+
+Register in your DbContext:
+
+```csharp
+modelBuilder.HasDbFunction(typeof(ScalarFunctions).GetMethod(nameof(ScalarFunctions.CalculateTax)));
+```
+
+### Dapper
+
+Generates repository methods with sync and async variants:
+
+```csharp
+public partial class ScalarFunctionRepository(IDbConnection connection)
+{
+    public decimal CalculateTax(decimal amount, decimal rate)
+    {
+        return connection.ExecuteScalar<decimal>(
+            "SELECT dbo.calculate_tax(@Amount, @Rate)",
+            new { Amount = amount, Rate = rate });
+    }
+    
+    public async Task<decimal> CalculateTaxAsync(decimal amount, decimal rate)
+    {
+        return await connection.ExecuteScalarAsync<decimal>(
+            "SELECT dbo.calculate_tax(@Amount, @Rate)",
+            new { Amount = amount, Rate = rate });
+    }
+}
+```
+
+## Stored Procedures
+
+The tool extracts stored procedures from the database and generates appropriate code based on the detected output type:
+
+### Output Type Detection
+
+- **None**: Procedures that don't return any value
+- **Scalar**: Procedures with OUT parameters (returns single value)
+- **Tabular**: Procedures that return result sets (SELECT statements)
+
+### EF Core
+
+Generates DbContext extension methods:
+
+```csharp
+public static partial class StoredProcedureExtensions
+{
+    // Void procedure (no output)
+    public static void CleanupOldData(this DbContext context, DateTime olderThan)
+    {
+        context.Database.ExecuteSqlRaw("EXEC dbo.CleanupOldData @OlderThan", 
+            new SqlParameter("@OlderThan", olderThan));
+    }
+    
+    public static async Task CleanupOldDataAsync(this DbContext context, DateTime olderThan, 
+        CancellationToken cancellationToken = default)
+    {
+        await context.Database.ExecuteSqlRawAsync("EXEC dbo.CleanupOldData @OlderThan", 
+            new SqlParameter("@OlderThan", olderThan), cancellationToken);
+    }
+    
+    // Tabular procedure (returns result set)
+    public static List<GetOrdersByDateResult> GetOrdersByDate(this DbContext context, DateTime orderDate)
+    {
+        return context.Set<GetOrdersByDateResult>()
+            .FromSqlRaw("EXEC dbo.GetOrdersByDate @OrderDate", 
+                new SqlParameter("@OrderDate", orderDate))
+            .ToList();
+    }
+}
+
+// Result type for tabular procedures
+[Keyless]
+public class GetOrdersByDateResult
+{
+    public int OrderId { get; set; }
+    public DateTime OrderDate { get; set; }
+    public decimal TotalAmount { get; set; }
+}
+```
+
+### Dapper
+
+Generates IDbConnection extension methods:
+
+```csharp
+public static partial class StoredProcedureExtensions
+{
+    // Void procedure
+    public static void CleanupOldData(this IDbConnection connection, DateTime olderThan)
+    {
+        connection.Execute("dbo.CleanupOldData", new { olderThan }, 
+            commandType: CommandType.StoredProcedure);
+    }
+    
+    // Tabular procedure
+    public static IEnumerable<GetOrdersByDateResult> GetOrdersByDate(
+        this IDbConnection connection, DateTime orderDate)
+    {
+        return connection.Query<GetOrdersByDateResult>("dbo.GetOrdersByDate", 
+            new { orderDate }, commandType: CommandType.StoredProcedure);
+    }
+    
+    public static async Task<IEnumerable<GetOrdersByDateResult>> GetOrdersByDateAsync(
+        this IDbConnection connection, DateTime orderDate)
+    {
+        return await connection.QueryAsync<GetOrdersByDateResult>("dbo.GetOrdersByDate", 
+            new { orderDate }, commandType: CommandType.StoredProcedure);
+    }
+}
+```
+
+## Type Converters
+
+The tool automatically generates type converters for types not natively supported by all database drivers:
+
+### DateOnly, TimeOnly, DateTimeOffset
+
+Some database drivers don't natively support `DateOnly`, `TimeOnly`, or `DateTimeOffset`. The tool generates:
+
+**EF Core ValueConverters:**
+
+```csharp
+public class DateOnlyConverter : ValueConverter<DateOnly, DateTime>
+{
+    public DateOnlyConverter() : base(
+        d => d.ToDateTime(TimeOnly.MinValue),
+        d => DateOnly.FromDateTime(d))
+    { }
+}
+```
+
+**Dapper TypeHandlers:**
+
+```csharp
+public class DateOnlyTypeHandler : SqlMapper.TypeHandler<DateOnly>
+{
+    public override DateOnly Parse(object value) => DateOnly.FromDateTime((DateTime)value);
+    public override void SetValue(IDbDataParameter parameter, DateOnly value)
+    {
+        parameter.Value = value.ToDateTime(TimeOnly.MinValue);
+        parameter.DbType = DbType.Date;
+    }
+}
+
+// Registration helper
+public static class DapperTypeHandlerRegistration
+{
+    public static void RegisterAll()
+    {
+        SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
+        SqlMapper.AddTypeHandler(new TimeOnlyTypeHandler());
+        SqlMapper.AddTypeHandler(new DateTimeOffsetTypeHandler());
+    }
+}
+```
+
+### DateTimeOffset Mapping
+
+The tool maps database types to `DateTimeOffset` when appropriate:
+
+| Database | Type | C# Type |
+|----------|------|---------|
+| PostgreSQL | `timestamptz` | `DateTimeOffset` |
+| SQL Server | `datetimeoffset` | `DateTimeOffset` |
 
 ## Pluralization
 

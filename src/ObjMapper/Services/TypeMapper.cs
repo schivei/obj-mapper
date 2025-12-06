@@ -145,10 +145,6 @@ public class TypeMapper(DatabaseType databaseType)
             // Handle "CHARACTER VARYING" as a phrase
             "CHARACTER" when fullType.Contains("VARYING") => "string",
             
-            // Handle timestamp variants with time zone
-            _ when normalizedBase == "TIMESTAMP" && fullType.Contains("TIMEZONE") => "DateTimeOffset",
-            _ when normalizedBase == "TIME" && fullType.Contains("TIMEZONE") => "TimeOnly",
-            
             // Default to string for unknown types
             _ => "string"
         };

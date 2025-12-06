@@ -345,4 +345,20 @@ public class TypeInferenceTests
         // Assert
         Assert.Equal(expected, result);
     }
+    
+    [Theory]
+    [InlineData("  char(36)  ", true)]  // Leading/trailing whitespace
+    [InlineData("char( 36 )", true)]     // Internal whitespace
+    [InlineData("character(36)", true)]  // PostgreSQL character type
+    [InlineData("character varying(36)", true)]  // PostgreSQL varchar
+    [InlineData("CHARACTER VARYING(36)", true)]  // Case insensitive
+    [InlineData("CHAR (36)", true)]      // Space before parenthesis
+    public void GuidColumnAnalyzer_IsPotentialGuidType_HandlesWhitespace(string dbType, bool expected)
+    {
+        // Act
+        var result = GuidColumnAnalyzer.IsPotentialGuidType(dbType);
+        
+        // Assert
+        Assert.Equal(expected, result);
+    }
 }

@@ -14,8 +14,9 @@ public static partial class GuidColumnAnalyzer
     /// <summary>
     /// Regex pattern to match exactly 36 character string types.
     /// Matches: char(36), nchar(36), varchar(36), nvarchar(36), character(36), character varying(36)
+    /// Handles whitespace variations.
     /// </summary>
-    [GeneratedRegex(@"^n?(var)?char\s*\(\s*36\s*\)$|^character(\s+varying)?\s*\(\s*36\s*\)$", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"^\s*n?(var)?char\s*\(\s*36\s*\)\s*$|^\s*character(\s+varying)?\s*\(\s*36\s*\)\s*$", RegexOptions.IgnoreCase)]
     private static partial Regex GuidTypePattern();
     
     /// <summary>
@@ -101,14 +102,11 @@ public static partial class GuidColumnAnalyzer
     {
         var result = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         
-        foreach (var column in columns)
+        foreach (var column in columns.Where(c => IsPotentialGuidType(c.Type)))
         {
-            if (IsPotentialGuidType(column.Type))
-            {
-                var couldBeGuid = await CouldBeGuidAsync(
-                    connection, schemaName, tableName, column.Column, databaseType);
-                result[column.Column] = couldBeGuid;
-            }
+            var couldBeGuid = await CouldBeGuidAsync(
+                connection, schemaName, tableName, column.Column, databaseType);
+            result[column.Column] = couldBeGuid;
         }
         
         return result;

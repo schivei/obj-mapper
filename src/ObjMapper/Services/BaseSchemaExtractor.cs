@@ -122,12 +122,10 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
         var booleanAnalysis = await BooleanColumnAnalyzer.AnalyzeColumnsAsync(
             connection, tableInfo.Schema, tableInfo.Name, tableInfo.Columns, DatabaseType);
         
-        foreach (var column in tableInfo.Columns)
+        foreach (var column in tableInfo.Columns.Where(c => 
+            booleanAnalysis.TryGetValue(c.Column, out var couldBeBoolean) && couldBeBoolean))
         {
-            if (booleanAnalysis.TryGetValue(column.Column, out var couldBeBoolean) && couldBeBoolean)
-            {
-                column.InferredAsBoolean = true;
-            }
+            column.InferredAsBoolean = true;
         }
     }
     
@@ -139,12 +137,10 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
         var guidAnalysis = await GuidColumnAnalyzer.AnalyzeColumnsAsync(
             connection, tableInfo.Schema, tableInfo.Name, tableInfo.Columns, DatabaseType);
         
-        foreach (var column in tableInfo.Columns)
+        foreach (var column in tableInfo.Columns.Where(c => 
+            guidAnalysis.TryGetValue(c.Column, out var couldBeGuid) && couldBeGuid))
         {
-            if (guidAnalysis.TryGetValue(column.Column, out var couldBeGuid) && couldBeGuid)
-            {
-                column.InferredAsGuid = true;
-            }
+            column.InferredAsGuid = true;
         }
     }
 

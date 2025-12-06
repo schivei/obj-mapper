@@ -97,14 +97,11 @@ public static class BooleanColumnAnalyzer
     {
         var result = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
         
-        foreach (var column in columns)
+        foreach (var column in columns.Where(c => IsSmallIntegerType(c.Type)))
         {
-            if (IsSmallIntegerType(column.Type))
-            {
-                var couldBeBoolean = await CouldBeBooleanAsync(
-                    connection, schemaName, tableName, column.Column, databaseType);
-                result[column.Column] = couldBeBoolean;
-            }
+            var couldBeBoolean = await CouldBeBooleanAsync(
+                connection, schemaName, tableName, column.Column, databaseType);
+            result[column.Column] = couldBeBoolean;
         }
         
         return result;

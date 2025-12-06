@@ -228,7 +228,6 @@ public class RelationshipTests
         Assert.Contains("Order.cs", entities.Keys);
         
         var userEntity = entities["User.cs"];
-        var orderEntity = entities["Order.cs"];
         
         // Dapper entities shouldn't have navigation properties
         Assert.DoesNotContain("ICollection<Order>", userEntity);

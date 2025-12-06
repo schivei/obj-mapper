@@ -32,12 +32,14 @@ public class TypeInferenceService
         new() { ColumnName = "can_edit", DbType = "tinyint", Comment = "", InferredType = "bool" },
         new() { ColumnName = "allow_access", DbType = "smallint", Comment = "", InferredType = "bool" },
         
-        // GUID patterns
-        new() { ColumnName = "uuid", DbType = "varchar", Comment = "", InferredType = "Guid" },
+        // GUID patterns - consistent use of 36-character types
+        new() { ColumnName = "uuid", DbType = "char(36)", Comment = "", InferredType = "Guid" },
         new() { ColumnName = "guid", DbType = "char(36)", Comment = "", InferredType = "Guid" },
-        new() { ColumnName = "external_id", DbType = "varchar(36)", Comment = "UUID", InferredType = "Guid" },
+        new() { ColumnName = "external_id", DbType = "varchar(36)", Comment = "UUID identifier", InferredType = "Guid" },
         new() { ColumnName = "correlation_id", DbType = "char(36)", Comment = "", InferredType = "Guid" },
-        new() { ColumnName = "tracking_id", DbType = "varchar(36)", Comment = "GUID format", InferredType = "Guid" },
+        new() { ColumnName = "tracking_id", DbType = "varchar(36)", Comment = "GUID identifier", InferredType = "Guid" },
+        new() { ColumnName = "request_id", DbType = "nvarchar(36)", Comment = "", InferredType = "Guid" },
+        new() { ColumnName = "session_id", DbType = "character(36)", Comment = "UUID session", InferredType = "Guid" },
         
         // Date patterns
         new() { ColumnName = "created_at", DbType = "varchar", Comment = "", InferredType = "DateTime" },
@@ -99,9 +101,10 @@ public class TypeInferenceService
             _model = TrainModel();
             _predictionEngine = _mlContext.Model.CreatePredictionEngine<ColumnFeatures, TypePrediction>(_model);
         }
-        catch
+        catch (Exception ex)
         {
-            // If ML training fails, we'll fall back to rule-based inference
+            // If ML training fails, log the reason and fall back to rule-based inference
+            Console.Error.WriteLine($"ML model initialization failed, using rule-based inference: {ex.Message}");
             _model = null;
             _predictionEngine = null;
         }

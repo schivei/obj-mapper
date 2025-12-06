@@ -240,9 +240,9 @@ var noPluralizeOption = new Option<bool>("--no-pluralize")
     DefaultValueFactory = _ => config.NoPluralizer
 };
 
-var typeInferenceOption = new Option<bool>("--type-inference", "--ti")
+var noInferenceOption = new Option<bool>("--no-inference")
 {
-    Description = "Enable ML-based type inference for better type mapping (analyzes column names, comments, and data). Only available with --connection-string mode."
+    Description = "Disable type inference for column type mapping. Type inference is enabled by default and analyzes column names, comments, and data to determine best C# types (e.g., char(36) -> Guid, tinyint with 0/1 values -> bool)."
 };
 
 // Add validation for required inputs
@@ -280,7 +280,7 @@ rootCommand.Options.Add(contextNameOption);
 rootCommand.Options.Add(entityModeOption);
 rootCommand.Options.Add(localeOption);
 rootCommand.Options.Add(noPluralizeOption);
-rootCommand.Options.Add(typeInferenceOption);
+rootCommand.Options.Add(noInferenceOption);
 
 // Set handler
 rootCommand.SetAction(async (parseResult, cancellationToken) =>
@@ -300,7 +300,7 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         EntityMode = parseResult.GetValue(entityModeOption)!,
         Locale = parseResult.GetValue(localeOption)!,
         NoPluralizer = parseResult.GetValue(noPluralizeOption),
-        UseTypeInference = parseResult.GetValue(typeInferenceOption)
+        NoInference = parseResult.GetValue(noInferenceOption)
     };
 
     await ExecuteAsync(options);
@@ -344,10 +344,7 @@ static async Task ExecuteAsync(CommandOptions options)
         }
         
         Console.WriteLine($"Schema filter: {options.SchemaFilter ?? "(default)"}");
-        if (options.UseTypeInference)
-        {
-            Console.WriteLine("Type inference: Enabled (analyzing column data for boolean detection)");
-        }
+        Console.WriteLine($"Type inference: {(options.UseTypeInference ? "Enabled" : "Disabled")}");
         Console.WriteLine();
         
         // Extract schema from database
@@ -374,9 +371,14 @@ static async Task ExecuteAsync(CommandOptions options)
             if (options.UseTypeInference)
             {
                 var inferredBooleans = schema.Tables.Sum(t => t.Columns.Count(c => c.InferredAsBoolean));
+                var inferredGuids = schema.Tables.Sum(t => t.Columns.Count(c => c.InferredAsGuid));
                 if (inferredBooleans > 0)
                 {
-                    Console.WriteLine($"Found {inferredBooleans} columns inferred as boolean.");
+                    Console.WriteLine($"Inferred {inferredBooleans} columns as boolean.");
+                }
+                if (inferredGuids > 0)
+                {
+                    Console.WriteLine($"Inferred {inferredGuids} columns as GUID.");
                 }
             }
         }

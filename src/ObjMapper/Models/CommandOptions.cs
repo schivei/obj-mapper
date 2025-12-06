@@ -20,9 +20,15 @@ public class CommandOptions
     public bool NoPluralizer { get; set; }
     
     /// <summary>
-    /// Whether to use ML-based type inference for column type mapping.
+    /// Whether to disable type inference for column type mapping.
+    /// Type inference is enabled by default.
     /// </summary>
-    public bool UseTypeInference { get; set; }
+    public bool NoInference { get; set; }
+    
+    /// <summary>
+    /// Whether type inference is enabled (inverse of NoInference).
+    /// </summary>
+    public bool UseTypeInference => !NoInference;
     
     /// <summary>
     /// Whether to use connection string mode instead of CSV files.

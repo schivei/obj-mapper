@@ -249,4 +249,100 @@ public class TypeInferenceTests
         // Assert
         Assert.Equal("bool", result);
     }
+    
+    [Fact]
+    public void TypeMapper_MapColumnToCSharpType_UsesInferredAsGuid()
+    {
+        // Arrange
+        var typeMapper = new TypeMapper(DatabaseType.SqlServer);
+        var column = new ColumnInfo
+        {
+            Column = "tracking_id",
+            Type = "varchar(36)",
+            Nullable = false,
+            InferredAsGuid = true
+        };
+        
+        // Act
+        var result = typeMapper.MapColumnToCSharpType(column);
+        
+        // Assert
+        Assert.Equal("Guid", result);
+    }
+    
+    [Fact]
+    public void TypeMapper_MapColumnToCSharpType_UsesNullableInferredAsGuid()
+    {
+        // Arrange
+        var typeMapper = new TypeMapper(DatabaseType.SqlServer);
+        var column = new ColumnInfo
+        {
+            Column = "tracking_id",
+            Type = "varchar(36)",
+            Nullable = true,
+            InferredAsGuid = true
+        };
+        
+        // Act
+        var result = typeMapper.MapColumnToCSharpType(column);
+        
+        // Assert
+        Assert.Equal("Guid?", result);
+    }
+    
+    [Theory]
+    [InlineData("char(36)", "Guid")]
+    [InlineData("CHAR(36)", "Guid")]
+    [InlineData("nchar(36)", "Guid")]
+    [InlineData("NCHAR(36)", "Guid")]
+    public void TypeMapper_MapsChar36ToGuid(string dbType, string expected)
+    {
+        // Arrange
+        var typeMapper = new TypeMapper(DatabaseType.SqlServer);
+        var column = new ColumnInfo
+        {
+            Column = "some_id",
+            Type = dbType,
+            Nullable = false
+        };
+        
+        // Act
+        var result = typeMapper.MapColumnToCSharpType(column);
+        
+        // Assert
+        Assert.Equal(expected, result);
+    }
+    
+    [Theory]
+    [InlineData("datetimeoffset", "DateTimeOffset")]
+    [InlineData("DATETIMEOFFSET", "DateTimeOffset")]
+    [InlineData("timestamptz", "DateTimeOffset")]
+    [InlineData("TIMESTAMPTZ", "DateTimeOffset")]
+    public void TypeMapper_MapsDateTimeOffsetTypes(string dbType, string expected)
+    {
+        // Arrange
+        var typeMapper = new TypeMapper(DatabaseType.SqlServer);
+        
+        // Act
+        var result = typeMapper.MapToCSharpType(dbType, false);
+        
+        // Assert
+        Assert.Equal(expected, result);
+    }
+    
+    [Theory]
+    [InlineData("char(36)", true)]
+    [InlineData("varchar(36)", true)]
+    [InlineData("nchar(36)", true)]
+    [InlineData("nvarchar(36)", true)]
+    [InlineData("varchar(255)", false)]
+    [InlineData("char(10)", false)]
+    public void GuidColumnAnalyzer_IsPotentialGuidType(string dbType, bool expected)
+    {
+        // Act
+        var result = GuidColumnAnalyzer.IsPotentialGuidType(dbType);
+        
+        // Assert
+        Assert.Equal(expected, result);
+    }
 }

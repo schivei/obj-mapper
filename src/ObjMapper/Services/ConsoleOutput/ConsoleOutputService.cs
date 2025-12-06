@@ -10,6 +10,9 @@ namespace ObjMapper.Services.ConsoleOutput;
 /// </summary>
 public sealed class ConsoleOutputService : IDisposable
 {
+    private const int MaxDisplayLength = 60;
+    private const int TruncatedLength = 57;
+    
     private readonly StringBuilder _logBuffer = new();
     private readonly Stopwatch _stopwatch = new();
     private readonly string _logFilePath;
@@ -268,8 +271,8 @@ public sealed class ConsoleOutputService : IDisposable
 
         foreach (var (key, value) in config)
         {
-            var displayValue = value.Length > 60 
-                ? value[..57] + "..." 
+            var displayValue = value.Length > MaxDisplayLength 
+                ? value[..TruncatedLength] + "..." 
                 : value;
             table.AddRow(Markup.Escape(key), Markup.Escape(displayValue));
         }
@@ -308,9 +311,13 @@ public sealed class ConsoleOutputService : IDisposable
         {
             File.WriteAllText(_logFilePath, _logBuffer.ToString());
         }
-        catch
+        catch (IOException)
         {
-            // Ignore errors when writing log file
+            // Ignore I/O errors when writing log file (e.g., disk full)
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // Ignore permission errors when writing log file
         }
     }
 }

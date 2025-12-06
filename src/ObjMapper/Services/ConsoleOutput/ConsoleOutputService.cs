@@ -142,7 +142,7 @@ public sealed class ConsoleOutputService : IDisposable
     }
 
     /// <summary>
-    /// Runs an action with a spinner.
+    /// Runs an action with a spinner that shows elapsed time in real-time.
     /// </summary>
     public async Task<T> WithSpinnerAsync<T>(string message, Func<Task<T>> action)
     {
@@ -150,18 +150,79 @@ public sealed class ConsoleOutputService : IDisposable
         var taskStopwatch = Stopwatch.StartNew();
         
         T result = default!;
-        await AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .SpinnerStyle(Style.Parse("cyan"))
-            .StartAsync(message, async ctx =>
+        
+        // Use Live display for real-time elapsed time updates
+        await AnsiConsole.Live(CreateSpinnerTable(message, TimeSpan.Zero))
+            .AutoClear(false)
+            .Overflow(VerticalOverflow.Ellipsis)
+            .Cropping(VerticalOverflowCropping.Top)
+            .StartAsync(async ctx =>
             {
-                result = await action();
+                var taskCompletion = new TaskCompletionSource<T>();
+                var cts = new CancellationTokenSource();
+                
+                // Start the actual task
+                var actionTask = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var res = await action();
+                        taskCompletion.TrySetResult(res);
+                    }
+                    catch (Exception ex)
+                    {
+                        taskCompletion.TrySetException(ex);
+                    }
+                });
+                
+                // Update display every 100ms with elapsed time
+                while (!taskCompletion.Task.IsCompleted)
+                {
+                    ctx.UpdateTarget(CreateSpinnerTable(message, taskStopwatch.Elapsed));
+                    
+                    // Wait a bit before next update, or until task completes
+                    var delayTask = Task.Delay(100, cts.Token);
+                    await Task.WhenAny(taskCompletion.Task, delayTask);
+                }
+                
+                // Final update
+                ctx.UpdateTarget(CreateSpinnerTable(message, taskStopwatch.Elapsed, completed: true));
+                
+                result = await taskCompletion.Task;
+                await cts.CancelAsync();
             });
         
         taskStopwatch.Stop();
         Log($"[TASK END] {message} - {taskStopwatch.ElapsedMilliseconds}ms");
         
         return result;
+    }
+    
+    /// <summary>
+    /// Creates a table with spinner and elapsed time for live display.
+    /// </summary>
+    private static Table CreateSpinnerTable(string message, TimeSpan elapsed, bool completed = false)
+    {
+        var spinnerChars = new[] { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
+        var spinnerIndex = (int)(elapsed.TotalMilliseconds / 80) % spinnerChars.Length;
+        var spinner = completed ? "[green]✓[/]" : $"[cyan]{spinnerChars[spinnerIndex]}[/]";
+        var elapsedStr = FormatElapsed(elapsed);
+        var status = completed ? "[green]Done[/]" : "[grey]Running...[/]";
+        
+        var table = new Table()
+            .Border(TableBorder.None)
+            .HideHeaders()
+            .AddColumn(new TableColumn("").Width(3))
+            .AddColumn(new TableColumn("").NoWrap())
+            .AddColumn(new TableColumn("").RightAligned());
+        
+        table.AddRow(
+            new Markup(spinner),
+            new Markup($"[white]{Markup.Escape(message)}[/]"),
+            new Markup($"[yellow]⏱ {elapsedStr}[/] {status}")
+        );
+        
+        return table;
     }
 
     /// <summary>
@@ -177,7 +238,7 @@ public sealed class ConsoleOutputService : IDisposable
     }
 
     /// <summary>
-    /// Runs an action with a progress bar.
+    /// Runs an action with a progress bar showing elapsed and remaining time.
     /// </summary>
     public async Task WithProgressAsync(string description, int totalSteps, Func<Action<int, string>, Task> action)
     {
@@ -192,6 +253,7 @@ public sealed class ConsoleOutputService : IDisposable
                 new TaskDescriptionColumn(),
                 new ProgressBarColumn(),
                 new PercentageColumn(),
+                new ElapsedTimeColumn(),
                 new RemainingTimeColumn(),
                 new SpinnerColumn()
             ])

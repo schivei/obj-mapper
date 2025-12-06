@@ -232,10 +232,10 @@ public class TypeInferenceService
     private static bool IsSmallIntegerType(string type)
     {
         var normalizedType = type.ToUpperInvariant();
+        // Only small integer types - exclude INT which is a 32-bit integer
         return normalizedType.StartsWith("TINYINT") || normalizedType.StartsWith("SMALLINT") ||
                normalizedType.StartsWith("BIT") || normalizedType == "INT2" ||
-               normalizedType.StartsWith("MEDIUMINT") || 
-               (normalizedType.StartsWith("INT") && !normalizedType.StartsWith("INTERVAL"));
+               normalizedType.StartsWith("MEDIUMINT") || normalizedType == "BYTE";
     }
     
     private static bool IsStringType(string type)

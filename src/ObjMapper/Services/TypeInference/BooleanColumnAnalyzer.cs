@@ -56,19 +56,31 @@ public static class BooleanColumnAnalyzer
             }
             
             // Check if all values are in the boolean set
-            return distinctValues.All(v => 
-                v is null || 
-                (v is int intVal && (intVal == 0 || intVal == 1)) ||
-                (v is long longVal && (longVal == 0 || longVal == 1)) ||
-                (v is short shortVal && (shortVal == 0 || shortVal == 1)) ||
-                (v is byte byteVal && (byteVal == 0 || byteVal == 1)) ||
-                (v is sbyte sbyteVal && (sbyteVal == 0 || sbyteVal == 1)) ||
-                (v is bool) ||
-                (v is decimal decVal && (decVal == 0 || decVal == 1)));
+            return distinctValues.All(IsBooleanValue);
         }
         catch
         {
             // If analysis fails, assume it's not boolean
+            return false;
+        }
+    }
+    
+    /// <summary>
+    /// Checks if a value represents a boolean (null, true, false, 0, or 1).
+    /// </summary>
+    private static bool IsBooleanValue(object? value)
+    {
+        if (value is null or bool)
+            return true;
+        
+        // Try to convert to long for numeric comparison
+        try
+        {
+            var numericValue = Convert.ToInt64(value);
+            return numericValue is 0 or 1;
+        }
+        catch
+        {
             return false;
         }
     }

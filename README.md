@@ -2,6 +2,15 @@
 
 Database reverse engineering dotnet tool - generates entity mappings from CSV schema files or database connections for EF Core and Dapper. Features ML-based type inference, scalar UDF support, and automatic type converters.
 
+[![Automatic Dependency Submission](https://github.com/schivei/obj-mapper/actions/workflows/dependency-graph/auto-submission/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/dependency-graph/auto-submission)
+[![CI](https://github.com/schivei/obj-mapper/actions/workflows/ci.yml/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/schivei/obj-mapper/actions/workflows/codeql.yml/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/codeql.yml)
+[![Copilot code review](https://github.com/schivei/obj-mapper/actions/workflows/copilot-pull-request-reviewer/copilot-pull-request-reviewer/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/copilot-pull-request-reviewer/copilot-pull-request-reviewer)
+[![Copilot coding agent](https://github.com/schivei/obj-mapper/actions/workflows/copilot-swe-agent/copilot/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/copilot-swe-agent/copilot)
+[![Release](https://github.com/schivei/obj-mapper/actions/workflows/release.yml/badge.svg)](https://github.com/schivei/obj-mapper/actions/workflows/release.yml)
+[![NuGet](https://img.shields.io/nuget/v/ObjMapper?style=flat)](https://www.nuget.org/packages/ObjMapper/)
+![GitHub Pre-Release](https://img.shields.io/github/v/release/schivei/obj-mapper?include_prereleases)
+
 ## Features
 
 - **Database Schema Extraction**: Extract schema directly from PostgreSQL, SQL Server, MySQL, SQLite databases

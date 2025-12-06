@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 using Spectre.Console;
 
@@ -8,6 +9,7 @@ namespace ObjMapper.Services.ConsoleOutput;
 /// Provides rich console output with progress bars, colors, and logging.
 /// Cross-platform compatible using Spectre.Console.
 /// </summary>
+[ExcludeFromCodeCoverage]
 public sealed class ConsoleOutputService : IDisposable
 {
     private const int MaxDisplayLength = 60;
@@ -17,6 +19,11 @@ public sealed class ConsoleOutputService : IDisposable
     private readonly Stopwatch _stopwatch = new();
     private readonly string _logFilePath;
     private bool _disposed;
+    
+    // Latency tracking for better time estimation
+    private TimeSpan _lastOperationLatency = TimeSpan.Zero;
+    private int _totalObjectsProcessed;
+    private int _estimatedTotalObjects;
 
     public string LogFilePath => _logFilePath;
     public TimeSpan Elapsed => _stopwatch.Elapsed;
@@ -30,6 +37,60 @@ public sealed class ConsoleOutputService : IDisposable
         
         Log("ObjMapper execution started");
         Log($"Log file: {_logFilePath}");
+        
+        // Show initial progress immediately
+        WriteInitialProgress();
+    }
+    
+    /// <summary>
+    /// Writes initial progress message when program starts.
+    /// </summary>
+    private void WriteInitialProgress()
+    {
+        AnsiConsole.MarkupLine($"[grey]Starting ObjMapper...[/] [yellow]⏱ 0ms[/]");
+        Log("Initial progress displayed");
+    }
+    
+    /// <summary>
+    /// Sets the estimated total objects for time calculations.
+    /// </summary>
+    public void SetEstimatedObjects(int count)
+    {
+        _estimatedTotalObjects = count;
+        Log($"Estimated total objects: {count}");
+    }
+    
+    /// <summary>
+    /// Updates the latency measurement from the last operation.
+    /// </summary>
+    public void UpdateLatency(TimeSpan latency)
+    {
+        _lastOperationLatency = latency;
+        Log($"Database latency updated: {latency.TotalMilliseconds:F0}ms");
+    }
+    
+    /// <summary>
+    /// Calculates estimated remaining time based on latency and object count.
+    /// </summary>
+    public TimeSpan EstimateRemainingTime(int objectsProcessed)
+    {
+        _totalObjectsProcessed = objectsProcessed;
+        
+        if (_estimatedTotalObjects <= 0 || objectsProcessed <= 0)
+            return TimeSpan.Zero;
+            
+        var remainingObjects = _estimatedTotalObjects - objectsProcessed;
+        if (remainingObjects <= 0)
+            return TimeSpan.Zero;
+            
+        // Calculate average time per object
+        var avgTimePerObject = _stopwatch.Elapsed.TotalMilliseconds / objectsProcessed;
+        
+        // Factor in measured latency (add latency overhead per remaining batch of 10 objects)
+        var latencyOverhead = (_lastOperationLatency.TotalMilliseconds * remainingObjects) / 10;
+        
+        var estimatedMs = (avgTimePerObject * remainingObjects) + latencyOverhead;
+        return TimeSpan.FromMilliseconds(estimatedMs);
     }
 
     /// <summary>

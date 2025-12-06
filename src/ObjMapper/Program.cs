@@ -1,23 +1,37 @@
 using System.CommandLine;
+using System.Diagnostics.CodeAnalysis;
 using ObjMapper.Generators;
 using ObjMapper.Models;
 using ObjMapper.Parsers;
 using ObjMapper.Services;
 using ObjMapper.Services.ConsoleOutput;
 
-// Ensure global config exists
-ConfigurationService.EnsureGlobalConfigExists();
+namespace ObjMapper;
 
-// Load effective configuration
-var config = ConfigurationService.LoadEffectiveConfig();
+/// <summary>
+/// Main program entry point for ObjMapper.
+/// </summary>
+[ExcludeFromCodeCoverage]
+public static class Program
+{
+    /// <summary>
+    /// Entry point for the ObjMapper tool.
+    /// </summary>
+    public static async Task<int> Main(string[] args)
+    {
+        // Ensure global config exists
+        ConfigurationService.EnsureGlobalConfigExists();
 
-// Create root command
-var rootCommand = new RootCommand("Database reverse engineering dotnet tool - generates entity mappings from CSV schema files or database connections");
+        // Load effective configuration
+        var config = ConfigurationService.LoadEffectiveConfig();
 
-// ============================================
-// Config subcommand
-// ============================================
-var configCommand = new Command("config", "Manage omap configuration");
+        // Create root command
+        var rootCommand = new RootCommand("Database reverse engineering dotnet tool - generates entity mappings from CSV schema files or database connections");
+
+        // ============================================
+        // Config subcommand
+        // ============================================
+        var configCommand = new Command("config", "Manage omap configuration");
 
 // Config set command
 var configSetCommand = new Command("set", "Set a configuration value");
@@ -354,12 +368,13 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         Legacy = parseResult.GetValue(legacyOption)
     };
 
-    await ExecuteAsync(options);
-});
+        await ExecuteAsync(options);
+    });
 
-return await rootCommand.Parse(args).InvokeAsync();
+    return await rootCommand.Parse(args).InvokeAsync();
+}
 
-static async Task ExecuteAsync(CommandOptions options)
+    private static async Task ExecuteAsync(CommandOptions options)
 {
     using var console = new ConsoleOutputService();
     var result = new ExecutionResult();
@@ -731,7 +746,7 @@ static async Task ExecuteAsync(CommandOptions options)
     }
 }
 
-static string MaskConnectionString(string connectionString)
+    private static string MaskConnectionString(string connectionString)
 {
     // Mask password in connection string for display
     var patterns = new[]
@@ -751,7 +766,7 @@ static string MaskConnectionString(string connectionString)
     return result;
 }
 
-static DatabaseType ParseDatabaseType(string dbType)
+    private static DatabaseType ParseDatabaseType(string dbType)
 {
     return dbType.ToLowerInvariant() switch
     {
@@ -764,7 +779,7 @@ static DatabaseType ParseDatabaseType(string dbType)
     };
 }
 
-static MappingType ParseMappingType(string mapType)
+    private static MappingType ParseMappingType(string mapType)
 {
     return mapType.ToLowerInvariant() switch
     {
@@ -774,7 +789,7 @@ static MappingType ParseMappingType(string mapType)
     };
 }
 
-static EntityTypeMode ParseEntityTypeMode(string entityMode)
+    private static EntityTypeMode ParseEntityTypeMode(string entityMode)
 {
     return entityMode.ToLowerInvariant() switch
     {
@@ -784,4 +799,5 @@ static EntityTypeMode ParseEntityTypeMode(string entityMode)
         "record_struct" or "rtr" => EntityTypeMode.RecordStruct,
         _ => EntityTypeMode.Class
     };
+}
 }

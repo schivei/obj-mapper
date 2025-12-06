@@ -1,6 +1,7 @@
 using System.Data.Common;
 using Microsoft.Data.Sqlite;
 using ObjMapper.Models;
+using ObjMapper.Services.TypeInference;
 
 namespace ObjMapper.Services;
 
@@ -9,7 +10,10 @@ namespace ObjMapper.Services;
 /// </summary>
 public class SqliteSchemaExtractor : IDatabaseSchemaExtractor
 {
-    public async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter = null)
+    public Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter = null) =>
+        ExtractSchemaAsync(connectionString, schemaFilter, enableTypeInference: false);
+
+    public async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter, bool enableTypeInference)
     {
         var schema = new DatabaseSchema();
         
@@ -30,6 +34,21 @@ public class SqliteSchemaExtractor : IDatabaseSchemaExtractor
             // Get columns
             tableInfo.Columns = await GetColumnsAsync(connection, tableName);
             
+            // Analyze columns for potential boolean types if type inference is enabled
+            if (enableTypeInference)
+            {
+                var booleanAnalysis = await BooleanColumnAnalyzer.AnalyzeColumnsAsync(
+                    connection, "main", tableName, tableInfo.Columns, DatabaseType.Sqlite);
+                
+                foreach (var column in tableInfo.Columns)
+                {
+                    if (booleanAnalysis.TryGetValue(column.Column, out var couldBeBoolean) && couldBeBoolean)
+                    {
+                        column.InferredAsBoolean = true;
+                    }
+                }
+            }
+            
             // Get indexes
             tableInfo.Indexes = await GetIndexesAsync(connection, tableName);
             
@@ -39,7 +58,37 @@ public class SqliteSchemaExtractor : IDatabaseSchemaExtractor
         // Get relationships
         schema.Relationships = await GetRelationshipsAsync(connection, tables);
         
+        // Populate table-level relationships (outgoing and incoming)
+        PopulateTableRelationships(schema);
+        
+        // SQLite doesn't support user-defined functions stored in the database
+        // They are registered at runtime via application code
+        schema.ScalarFunctions = [];
+        
         return schema;
+    }
+    
+    /// <summary>
+    /// Populates the OutgoingRelationships and IncomingRelationships for each table.
+    /// </summary>
+    private static void PopulateTableRelationships(DatabaseSchema schema)
+    {
+        foreach (var table in schema.Tables)
+        {
+            var fullTableName = string.IsNullOrEmpty(table.Schema) 
+                ? table.Name 
+                : $"{table.Schema}.{table.Name}";
+
+            // Outgoing relationships: where this table has foreign keys pointing to other tables
+            table.OutgoingRelationships = [.. schema.Relationships
+                .Where(r => r.FullTableFrom.Equals(fullTableName, StringComparison.OrdinalIgnoreCase) ||
+                           r.TableFrom.Equals(table.Name, StringComparison.OrdinalIgnoreCase))];
+
+            // Incoming relationships: where other tables have foreign keys pointing to this table
+            table.IncomingRelationships = [.. schema.Relationships
+                .Where(r => r.FullTableTo.Equals(fullTableName, StringComparison.OrdinalIgnoreCase) ||
+                           r.TableTo.Equals(table.Name, StringComparison.OrdinalIgnoreCase))];
+        }
     }
     
     public async Task<bool> TestConnectionAsync(string connectionString)

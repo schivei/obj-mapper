@@ -1,5 +1,6 @@
 using Microsoft.Data.SqlClient;
 using ObjMapper.Models;
+using ObjMapper.Services.TypeInference;
 
 namespace ObjMapper.Services;
 
@@ -8,7 +9,10 @@ namespace ObjMapper.Services;
 /// </summary>
 public class SqlServerSchemaExtractor : IDatabaseSchemaExtractor
 {
-    public async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter = null)
+    public Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter = null) =>
+        ExtractSchemaAsync(connectionString, schemaFilter, enableTypeInference: false);
+
+    public async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter, bool enableTypeInference)
     {
         var schema = new DatabaseSchema();
         var schemaName = schemaFilter ?? "dbo";
@@ -30,6 +34,21 @@ public class SqlServerSchemaExtractor : IDatabaseSchemaExtractor
             // Get columns
             tableInfo.Columns = await GetColumnsAsync(connection, tableSchema, tableName);
             
+            // Analyze columns for potential boolean types if type inference is enabled
+            if (enableTypeInference)
+            {
+                var booleanAnalysis = await BooleanColumnAnalyzer.AnalyzeColumnsAsync(
+                    connection, tableSchema, tableName, tableInfo.Columns, DatabaseType.SqlServer);
+                
+                foreach (var column in tableInfo.Columns)
+                {
+                    if (booleanAnalysis.TryGetValue(column.Column, out var couldBeBoolean) && couldBeBoolean)
+                    {
+                        column.InferredAsBoolean = true;
+                    }
+                }
+            }
+            
             // Get indexes
             tableInfo.Indexes = await GetIndexesAsync(connection, tableSchema, tableName);
             
@@ -39,7 +58,36 @@ public class SqlServerSchemaExtractor : IDatabaseSchemaExtractor
         // Get relationships
         schema.Relationships = await GetRelationshipsAsync(connection, schemaName);
         
+        // Populate table-level relationships (outgoing and incoming)
+        PopulateTableRelationships(schema);
+        
+        // Get scalar functions
+        schema.ScalarFunctions = await GetScalarFunctionsAsync(connection, schemaName);
+        
         return schema;
+    }
+    
+    /// <summary>
+    /// Populates the OutgoingRelationships and IncomingRelationships for each table.
+    /// </summary>
+    private static void PopulateTableRelationships(DatabaseSchema schema)
+    {
+        foreach (var table in schema.Tables)
+        {
+            var fullTableName = string.IsNullOrEmpty(table.Schema) 
+                ? table.Name 
+                : $"{table.Schema}.{table.Name}";
+
+            // Outgoing relationships: where this table has foreign keys pointing to other tables
+            table.OutgoingRelationships = [.. schema.Relationships
+                .Where(r => r.FullTableFrom.Equals(fullTableName, StringComparison.OrdinalIgnoreCase) ||
+                           r.TableFrom.Equals(table.Name, StringComparison.OrdinalIgnoreCase))];
+
+            // Incoming relationships: where other tables have foreign keys pointing to this table
+            table.IncomingRelationships = [.. schema.Relationships
+                .Where(r => r.FullTableTo.Equals(fullTableName, StringComparison.OrdinalIgnoreCase) ||
+                           r.TableTo.Equals(table.Name, StringComparison.OrdinalIgnoreCase))];
+        }
     }
     
     public async Task<bool> TestConnectionAsync(string connectionString)
@@ -218,5 +266,93 @@ public class SqlServerSchemaExtractor : IDatabaseSchemaExtractor
         }
         
         return relationships;
+    }
+    
+    private static async Task<List<ScalarFunctionInfo>> GetScalarFunctionsAsync(SqlConnection connection, string schemaName)
+    {
+        var functions = new List<ScalarFunctionInfo>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                SCHEMA_NAME(o.schema_id) AS schema_name,
+                o.name AS function_name,
+                TYPE_NAME(r.user_type_id) AS return_type
+            FROM sys.objects o
+            JOIN sys.sql_modules m ON o.object_id = m.object_id
+            LEFT JOIN sys.parameters r ON o.object_id = r.object_id AND r.parameter_id = 0
+            WHERE o.type = 'FN'
+              AND SCHEMA_NAME(o.schema_id) = @schema
+            ORDER BY o.name";
+        command.Parameters.AddWithValue("@schema", schemaName);
+        
+        var functionList = new List<(string schema, string name, string returnType, int objectId)>();
+        
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                functionList.Add((
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.IsDBNull(2) ? "sql_variant" : reader.GetString(2),
+                    0 // placeholder for object_id
+                ));
+            }
+        }
+        
+        // Get parameters for each function
+        foreach (var (funcSchema, funcName, returnType, _) in functionList)
+        {
+            var functionInfo = new ScalarFunctionInfo
+            {
+                Schema = funcSchema,
+                Name = funcName,
+                ReturnType = returnType
+            };
+            
+            functionInfo.Parameters = await GetFunctionParametersAsync(connection, funcSchema, funcName);
+            functions.Add(functionInfo);
+        }
+        
+        return functions;
+    }
+    
+    private static async Task<List<ScalarFunctionParameter>> GetFunctionParametersAsync(SqlConnection connection, string schemaName, string functionName)
+    {
+        var parameters = new List<ScalarFunctionParameter>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                p.name AS param_name,
+                TYPE_NAME(p.user_type_id) AS data_type,
+                p.parameter_id
+            FROM sys.parameters p
+            JOIN sys.objects o ON p.object_id = o.object_id
+            WHERE SCHEMA_NAME(o.schema_id) = @schema 
+              AND o.name = @function
+              AND p.parameter_id > 0
+            ORDER BY p.parameter_id";
+        command.Parameters.AddWithValue("@schema", schemaName);
+        command.Parameters.AddWithValue("@function", functionName);
+        
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var paramName = reader.GetString(0);
+            // Remove leading @ from parameter name
+            if (paramName.StartsWith('@'))
+                paramName = paramName[1..];
+                
+            parameters.Add(new ScalarFunctionParameter
+            {
+                Name = paramName,
+                DataType = reader.GetString(1),
+                OrdinalPosition = reader.GetInt32(2)
+            });
+        }
+        
+        return parameters;
     }
 }

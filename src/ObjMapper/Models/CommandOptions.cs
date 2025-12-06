@@ -17,7 +17,12 @@ public class CommandOptions
     public string ContextName { get; set; } = "AppDbContext";
     public string EntityMode { get; set; } = "class";
     public string Locale { get; set; } = "en-us";
-    public bool NoPluralizer { get; set; } = false;
+    public bool NoPluralizer { get; set; }
+    
+    /// <summary>
+    /// Whether to use ML-based type inference for column type mapping.
+    /// </summary>
+    public bool UseTypeInference { get; set; }
     
     /// <summary>
     /// Whether to use connection string mode instead of CSV files.

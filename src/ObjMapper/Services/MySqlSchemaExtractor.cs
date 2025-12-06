@@ -1,5 +1,6 @@
 using MySqlConnector;
 using ObjMapper.Models;
+using ObjMapper.Services.TypeInference;
 
 namespace ObjMapper.Services;
 
@@ -8,7 +9,10 @@ namespace ObjMapper.Services;
 /// </summary>
 public class MySqlSchemaExtractor : IDatabaseSchemaExtractor
 {
-    public async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter = null)
+    public Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter = null) =>
+        ExtractSchemaAsync(connectionString, schemaFilter, enableTypeInference: false);
+
+    public async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter, bool enableTypeInference)
     {
         var schema = new DatabaseSchema();
         
@@ -31,6 +35,21 @@ public class MySqlSchemaExtractor : IDatabaseSchemaExtractor
             // Get columns
             tableInfo.Columns = await GetColumnsAsync(connection, databaseName, tableName);
             
+            // Analyze columns for potential boolean types if type inference is enabled
+            if (enableTypeInference)
+            {
+                var booleanAnalysis = await BooleanColumnAnalyzer.AnalyzeColumnsAsync(
+                    connection, databaseName, tableName, tableInfo.Columns, DatabaseType.MySql);
+                
+                foreach (var column in tableInfo.Columns)
+                {
+                    if (booleanAnalysis.TryGetValue(column.Column, out var couldBeBoolean) && couldBeBoolean)
+                    {
+                        column.InferredAsBoolean = true;
+                    }
+                }
+            }
+            
             // Get indexes
             tableInfo.Indexes = await GetIndexesAsync(connection, databaseName, tableName);
             
@@ -40,7 +59,36 @@ public class MySqlSchemaExtractor : IDatabaseSchemaExtractor
         // Get relationships
         schema.Relationships = await GetRelationshipsAsync(connection, databaseName);
         
+        // Populate table-level relationships (outgoing and incoming)
+        PopulateTableRelationships(schema);
+        
+        // Get scalar functions
+        schema.ScalarFunctions = await GetScalarFunctionsAsync(connection, databaseName);
+        
         return schema;
+    }
+    
+    /// <summary>
+    /// Populates the OutgoingRelationships and IncomingRelationships for each table.
+    /// </summary>
+    private static void PopulateTableRelationships(DatabaseSchema schema)
+    {
+        foreach (var table in schema.Tables)
+        {
+            var fullTableName = string.IsNullOrEmpty(table.Schema) 
+                ? table.Name 
+                : $"{table.Schema}.{table.Name}";
+
+            // Outgoing relationships: where this table has foreign keys pointing to other tables
+            table.OutgoingRelationships = [.. schema.Relationships
+                .Where(r => r.FullTableFrom.Equals(fullTableName, StringComparison.OrdinalIgnoreCase) ||
+                           r.TableFrom.Equals(table.Name, StringComparison.OrdinalIgnoreCase))];
+
+            // Incoming relationships: where other tables have foreign keys pointing to this table
+            table.IncomingRelationships = [.. schema.Relationships
+                .Where(r => r.FullTableTo.Equals(fullTableName, StringComparison.OrdinalIgnoreCase) ||
+                           r.TableTo.Equals(table.Name, StringComparison.OrdinalIgnoreCase))];
+        }
     }
     
     public async Task<bool> TestConnectionAsync(string connectionString)
@@ -207,5 +255,85 @@ public class MySqlSchemaExtractor : IDatabaseSchemaExtractor
         }
         
         return relationships;
+    }
+    
+    private static async Task<List<ScalarFunctionInfo>> GetScalarFunctionsAsync(MySqlConnection connection, string databaseName)
+    {
+        var functions = new List<ScalarFunctionInfo>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                routine_schema,
+                routine_name,
+                COALESCE(data_type, 'varchar') AS return_type
+            FROM information_schema.routines
+            WHERE routine_schema = @database
+              AND routine_type = 'FUNCTION'
+            ORDER BY routine_name";
+        command.Parameters.AddWithValue("@database", databaseName);
+        
+        var functionList = new List<(string schema, string name, string returnType)>();
+        
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                functionList.Add((
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2)
+                ));
+            }
+        }
+        
+        // Get parameters for each function
+        foreach (var (funcSchema, funcName, returnType) in functionList)
+        {
+            var functionInfo = new ScalarFunctionInfo
+            {
+                Schema = funcSchema,
+                Name = funcName,
+                ReturnType = returnType
+            };
+            
+            functionInfo.Parameters = await GetFunctionParametersAsync(connection, funcSchema, funcName);
+            functions.Add(functionInfo);
+        }
+        
+        return functions;
+    }
+    
+    private static async Task<List<ScalarFunctionParameter>> GetFunctionParametersAsync(MySqlConnection connection, string databaseName, string functionName)
+    {
+        var parameters = new List<ScalarFunctionParameter>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                parameter_name,
+                data_type,
+                ordinal_position
+            FROM information_schema.parameters
+            WHERE specific_schema = @database 
+              AND specific_name = @function
+              AND parameter_mode = 'IN'
+            ORDER BY ordinal_position";
+        command.Parameters.AddWithValue("@database", databaseName);
+        command.Parameters.AddWithValue("@function", functionName);
+        
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var paramName = reader.IsDBNull(0) ? $"p{reader.GetInt32(2)}" : reader.GetString(0);
+            parameters.Add(new ScalarFunctionParameter
+            {
+                Name = paramName,
+                DataType = reader.GetString(1),
+                OrdinalPosition = reader.GetInt32(2)
+            });
+        }
+        
+        return parameters;
     }
 }

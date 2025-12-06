@@ -7,18 +7,15 @@ namespace ObjMapper.Generators;
 /// <summary>
 /// Generates EF Core entities, configurations, and DbContext.
 /// </summary>
-public class EfCoreGenerator : ICodeGenerator
+/// <param name="databaseType">The database type for type mapping.</param>
+/// <param name="namespaceName">The namespace for generated classes.</param>
+/// <param name="useTypeInference">Whether to use ML-based type inference.</param>
+public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "Generated", bool useTypeInference = false) : ICodeGenerator
 {
-    private readonly TypeMapper _typeMapper;
-    private readonly string _namespace;
+    private readonly TypeMapper _typeMapper = new(databaseType) { UseTypeInference = useTypeInference };
+    private readonly string _namespace = namespaceName;
 
     public EntityTypeMode EntityTypeMode { get; set; } = EntityTypeMode.Class;
-
-    public EfCoreGenerator(DatabaseType databaseType, string namespaceName = "Generated")
-    {
-        _typeMapper = new TypeMapper(databaseType);
-        _namespace = namespaceName;
-    }
 
     public Dictionary<string, string> GenerateEntities(DatabaseSchema schema)
     {
@@ -94,6 +91,73 @@ public class EfCoreGenerator : ICodeGenerator
         sb.AppendLine("    partial void OnModelCreatingPartial(ModelBuilder modelBuilder);");
         sb.AppendLine("}");
 
+        return sb.ToString();
+    }
+
+    public Dictionary<string, string> GenerateScalarFunctions(DatabaseSchema schema)
+    {
+        var functions = new Dictionary<string, string>();
+        
+        if (schema.ScalarFunctions.Count == 0)
+            return functions;
+        
+        var code = GenerateDbFunctionsClass(schema);
+        functions["DbFunctions.cs"] = code;
+        
+        return functions;
+    }
+    
+    private string GenerateDbFunctionsClass(DatabaseSchema schema)
+    {
+        var sb = new StringBuilder();
+        
+        sb.AppendLine("using Microsoft.EntityFrameworkCore;");
+        sb.AppendLine();
+        sb.AppendLine($"namespace {_namespace};");
+        sb.AppendLine();
+        sb.AppendLine("/// <summary>");
+        sb.AppendLine("/// Database scalar function mappings for EF Core.");
+        sb.AppendLine("/// </summary>");
+        sb.AppendLine("public static partial class DbFunctions");
+        sb.AppendLine("{");
+        
+        foreach (var func in schema.ScalarFunctions)
+        {
+            var methodName = NamingHelper.ToPascalCase(func.Name);
+            var returnType = _typeMapper.MapToCSharpType(func.ReturnType, true);
+            
+            // Generate XML comment
+            sb.AppendLine("    /// <summary>");
+            sb.AppendLine($"    /// Maps to database function {func.FullName}.");
+            sb.AppendLine("    /// </summary>");
+            
+            // Generate DbFunction attribute
+            if (!string.IsNullOrEmpty(func.Schema))
+            {
+                sb.AppendLine($"    [DbFunction(\"{func.Name}\", \"{func.Schema}\")]");
+            }
+            else
+            {
+                sb.AppendLine($"    [DbFunction(\"{func.Name}\")]");
+            }
+            
+            // Generate method signature
+            var parameters = func.Parameters
+                .OrderBy(p => p.OrdinalPosition)
+                .Select(p => $"{_typeMapper.MapToCSharpType(p.DataType, true)} {NamingHelper.ToCamelCase(p.Name)}")
+                .ToList();
+            
+            var parameterList = string.Join(", ", parameters);
+            
+            sb.AppendLine($"    public static {returnType} {methodName}({parameterList})");
+            sb.AppendLine("    {");
+            sb.AppendLine("        throw new NotSupportedException(\"This method can only be used in LINQ-to-Entities queries.\");");
+            sb.AppendLine("    }");
+            sb.AppendLine();
+        }
+        
+        sb.AppendLine("}");
+        
         return sb.ToString();
     }
 
@@ -223,7 +287,7 @@ public class EfCoreGenerator : ICodeGenerator
         foreach (var column in table.Columns)
         {
             var propertyName = columnToProperty[column.Column];
-            var csharpType = _typeMapper.MapToCSharpType(column.Type, column.Nullable);
+            var csharpType = _typeMapper.MapColumnToCSharpType(column);
 
             // Add comment if present
             if (!string.IsNullOrEmpty(column.Comment))

@@ -240,6 +240,11 @@ var noPluralizeOption = new Option<bool>("--no-pluralize")
     DefaultValueFactory = _ => config.NoPluralizer
 };
 
+var typeInferenceOption = new Option<bool>("--type-inference", "--ti")
+{
+    Description = "Enable ML-based type inference for better type mapping (analyzes column names, comments, and data). Only available with --connection-string mode."
+};
+
 // Add validation for required inputs
 rootCommand.Validators.Add(result =>
 {
@@ -275,6 +280,7 @@ rootCommand.Options.Add(contextNameOption);
 rootCommand.Options.Add(entityModeOption);
 rootCommand.Options.Add(localeOption);
 rootCommand.Options.Add(noPluralizeOption);
+rootCommand.Options.Add(typeInferenceOption);
 
 // Set handler
 rootCommand.SetAction(async (parseResult, cancellationToken) =>
@@ -293,7 +299,8 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         ContextName = parseResult.GetValue(contextNameOption)!,
         EntityMode = parseResult.GetValue(entityModeOption)!,
         Locale = parseResult.GetValue(localeOption)!,
-        NoPluralizer = parseResult.GetValue(noPluralizeOption)
+        NoPluralizer = parseResult.GetValue(noPluralizeOption),
+        UseTypeInference = parseResult.GetValue(typeInferenceOption)
     };
 
     await ExecuteAsync(options);
@@ -337,6 +344,10 @@ static async Task ExecuteAsync(CommandOptions options)
         }
         
         Console.WriteLine($"Schema filter: {options.SchemaFilter ?? "(default)"}");
+        if (options.UseTypeInference)
+        {
+            Console.WriteLine("Type inference: Enabled (analyzing column data for boolean detection)");
+        }
         Console.WriteLine();
         
         // Extract schema from database
@@ -354,11 +365,20 @@ static async Task ExecuteAsync(CommandOptions options)
             Console.WriteLine();
             
             Console.WriteLine("Extracting schema from database...");
-            schema = await extractor.ExtractSchemaAsync(options.ConnectionString!, options.SchemaFilter);
+            schema = await extractor.ExtractSchemaAsync(options.ConnectionString!, options.SchemaFilter, options.UseTypeInference);
             Console.WriteLine($"Found {schema.Tables.Count} tables.");
             Console.WriteLine($"Found {schema.Relationships.Count} relationships.");
             var totalIndexes = schema.Tables.Sum(t => t.Indexes.Count);
             Console.WriteLine($"Found {totalIndexes} indexes.");
+            
+            if (options.UseTypeInference)
+            {
+                var inferredBooleans = schema.Tables.Sum(t => t.Columns.Count(c => c.InferredAsBoolean));
+                if (inferredBooleans > 0)
+                {
+                    Console.WriteLine($"Found {inferredBooleans} columns inferred as boolean.");
+                }
+            }
         }
         catch (NotSupportedException ex)
         {
@@ -447,8 +467,8 @@ static async Task ExecuteAsync(CommandOptions options)
     // Create generator
     ICodeGenerator generator = mapType switch
     {
-        MappingType.EfCore => new EfCoreGenerator(dbType, options.Namespace) { EntityTypeMode = entType },
-        MappingType.Dapper => new DapperGenerator(dbType, options.Namespace) { EntityTypeMode = entType },
+        MappingType.EfCore => new EfCoreGenerator(dbType, options.Namespace, options.UseTypeInference) { EntityTypeMode = entType },
+        MappingType.Dapper => new DapperGenerator(dbType, options.Namespace, options.UseTypeInference) { EntityTypeMode = entType },
         _ => throw new InvalidOperationException($"Unknown mapping type: {mapType}")
     };
 
@@ -485,6 +505,19 @@ static async Task ExecuteAsync(CommandOptions options)
     var dbContextPath = Path.Combine(options.OutputDir.FullName, $"{options.ContextName}.cs");
     await File.WriteAllTextAsync(dbContextPath, dbContextContent);
     Console.WriteLine($"  Created: {dbContextPath}");
+
+    // Generate scalar functions if any
+    var scalarFunctions = generator.GenerateScalarFunctions(schema);
+    if (scalarFunctions.Count > 0)
+    {
+        Console.WriteLine("Generating scalar function mappings...");
+        foreach (var (fileName, content) in scalarFunctions)
+        {
+            var filePath = Path.Combine(options.OutputDir.FullName, fileName);
+            await File.WriteAllTextAsync(filePath, content);
+            Console.WriteLine($"  Created: {filePath}");
+        }
+    }
 
     Console.WriteLine();
     Console.WriteLine("Generation completed successfully!");

@@ -1,5 +1,6 @@
 using Npgsql;
 using ObjMapper.Models;
+using ObjMapper.Services.TypeInference;
 
 namespace ObjMapper.Services;
 
@@ -8,7 +9,10 @@ namespace ObjMapper.Services;
 /// </summary>
 public class PostgresSchemaExtractor : IDatabaseSchemaExtractor
 {
-    public async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter = null)
+    public Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter = null) =>
+        ExtractSchemaAsync(connectionString, schemaFilter, enableTypeInference: false);
+
+    public async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter, bool enableTypeInference)
     {
         var schema = new DatabaseSchema();
         var schemaName = schemaFilter ?? "public";
@@ -30,6 +34,21 @@ public class PostgresSchemaExtractor : IDatabaseSchemaExtractor
             // Get columns
             tableInfo.Columns = await GetColumnsAsync(connection, tableSchema, tableName);
             
+            // Analyze columns for potential boolean types if type inference is enabled
+            if (enableTypeInference)
+            {
+                var booleanAnalysis = await BooleanColumnAnalyzer.AnalyzeColumnsAsync(
+                    connection, tableSchema, tableName, tableInfo.Columns, DatabaseType.PostgreSql);
+                
+                foreach (var column in tableInfo.Columns)
+                {
+                    if (booleanAnalysis.TryGetValue(column.Column, out var couldBeBoolean) && couldBeBoolean)
+                    {
+                        column.InferredAsBoolean = true;
+                    }
+                }
+            }
+            
             // Get indexes
             tableInfo.Indexes = await GetIndexesAsync(connection, tableSchema, tableName);
             
@@ -39,7 +58,36 @@ public class PostgresSchemaExtractor : IDatabaseSchemaExtractor
         // Get relationships
         schema.Relationships = await GetRelationshipsAsync(connection, schemaName);
         
+        // Populate table-level relationships (outgoing and incoming)
+        PopulateTableRelationships(schema);
+        
+        // Get scalar functions
+        schema.ScalarFunctions = await GetScalarFunctionsAsync(connection, schemaName);
+        
         return schema;
+    }
+    
+    /// <summary>
+    /// Populates the OutgoingRelationships and IncomingRelationships for each table.
+    /// </summary>
+    private static void PopulateTableRelationships(DatabaseSchema schema)
+    {
+        foreach (var table in schema.Tables)
+        {
+            var fullTableName = string.IsNullOrEmpty(table.Schema) 
+                ? table.Name 
+                : $"{table.Schema}.{table.Name}";
+
+            // Outgoing relationships: where this table has foreign keys pointing to other tables
+            table.OutgoingRelationships = [.. schema.Relationships
+                .Where(r => r.FullTableFrom.Equals(fullTableName, StringComparison.OrdinalIgnoreCase) ||
+                           r.TableFrom.Equals(table.Name, StringComparison.OrdinalIgnoreCase))];
+
+            // Incoming relationships: where other tables have foreign keys pointing to this table
+            table.IncomingRelationships = [.. schema.Relationships
+                .Where(r => r.FullTableTo.Equals(fullTableName, StringComparison.OrdinalIgnoreCase) ||
+                           r.TableTo.Equals(table.Name, StringComparison.OrdinalIgnoreCase))];
+        }
     }
     
     public async Task<bool> TestConnectionAsync(string connectionString)
@@ -216,5 +264,90 @@ public class PostgresSchemaExtractor : IDatabaseSchemaExtractor
         }
         
         return relationships;
+    }
+    
+    private static async Task<List<ScalarFunctionInfo>> GetScalarFunctionsAsync(NpgsqlConnection connection, string schemaName)
+    {
+        var functions = new List<ScalarFunctionInfo>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                n.nspname AS schema_name,
+                p.proname AS function_name,
+                pg_get_function_result(p.oid) AS return_type
+            FROM pg_proc p
+            JOIN pg_namespace n ON p.pronamespace = n.oid
+            WHERE n.nspname = @schema
+              AND p.prokind = 'f'
+              AND p.proretset = false
+              AND NOT EXISTS (
+                  SELECT 1 FROM pg_aggregate WHERE aggfnoid = p.oid
+              )
+            ORDER BY p.proname";
+        command.Parameters.AddWithValue("schema", schemaName);
+        
+        var functionList = new List<(string schema, string name, string returnType)>();
+        
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                functionList.Add((
+                    reader.GetString(0),
+                    reader.GetString(1),
+                    reader.GetString(2)
+                ));
+            }
+        }
+        
+        // Get parameters for each function
+        foreach (var (funcSchema, funcName, returnType) in functionList)
+        {
+            var functionInfo = new ScalarFunctionInfo
+            {
+                Schema = funcSchema,
+                Name = funcName,
+                ReturnType = returnType
+            };
+            
+            functionInfo.Parameters = await GetFunctionParametersAsync(connection, funcSchema, funcName);
+            functions.Add(functionInfo);
+        }
+        
+        return functions;
+    }
+    
+    private static async Task<List<ScalarFunctionParameter>> GetFunctionParametersAsync(NpgsqlConnection connection, string schemaName, string functionName)
+    {
+        var parameters = new List<ScalarFunctionParameter>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                COALESCE(p.parameter_name, 'p' || p.ordinal_position::text) AS param_name,
+                p.data_type,
+                p.ordinal_position
+            FROM information_schema.parameters p
+            JOIN information_schema.routines r ON p.specific_name = r.specific_name
+            WHERE r.routine_schema = @schema 
+              AND r.routine_name = @function
+              AND p.parameter_mode IN ('IN', 'INOUT')
+            ORDER BY p.ordinal_position";
+        command.Parameters.AddWithValue("schema", schemaName);
+        command.Parameters.AddWithValue("function", functionName);
+        
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            parameters.Add(new ScalarFunctionParameter
+            {
+                Name = reader.GetString(0),
+                DataType = reader.GetString(1),
+                OrdinalPosition = reader.GetInt32(2)
+            });
+        }
+        
+        return parameters;
     }
 }

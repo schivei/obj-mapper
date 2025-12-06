@@ -1,18 +1,27 @@
 using ObjMapper.Models;
+using ObjMapper.Services.TypeInference;
 
 namespace ObjMapper.Services;
 
 /// <summary>
 /// Maps database column types to C# types.
 /// </summary>
-public class TypeMapper
+/// <param name="databaseType">The database type for special type mappings.</param>
+public class TypeMapper(DatabaseType databaseType)
 {
-    private readonly DatabaseType _databaseType;
-
-    public TypeMapper(DatabaseType databaseType)
-    {
-        _databaseType = databaseType;
-    }
+    private readonly DatabaseType _databaseType = databaseType;
+    private TypeInferenceService? _typeInferenceService;
+    
+    /// <summary>
+    /// Gets or sets whether to use ML-based type inference.
+    /// </summary>
+    public bool UseTypeInference { get; set; }
+    
+    /// <summary>
+    /// Gets the type inference service (lazily initialized).
+    /// </summary>
+    private TypeInferenceService TypeInferenceService => 
+        _typeInferenceService ??= new TypeInferenceService();
 
     /// <summary>
     /// Maps a database type to a C# type.
@@ -22,15 +31,31 @@ public class TypeMapper
         var baseType = ExtractBaseType(dbType);
         var csharpType = GetCSharpType(baseType);
         
-        if (isNullable && IsValueType(csharpType))
+        return isNullable && IsValueType(csharpType) ? $"{csharpType}?" : csharpType;
+    }
+    
+    /// <summary>
+    /// Maps a column to a C# type, optionally using ML-based type inference.
+    /// </summary>
+    public string MapColumnToCSharpType(ColumnInfo column)
+    {
+        // If column was inferred as boolean by data analysis
+        if (column.InferredAsBoolean)
         {
-            return $"{csharpType}?";
+            return column.Nullable ? "bool?" : "bool";
         }
         
-        return csharpType;
+        // Use ML-based type inference if enabled
+        if (UseTypeInference)
+        {
+            return TypeInferenceService.InferType(column, column.InferredAsBoolean, this);
+        }
+        
+        // Fall back to standard mapping
+        return MapToCSharpType(column.Type, column.Nullable);
     }
 
-    private string ExtractBaseType(string dbType)
+    private static string ExtractBaseType(string dbType)
     {
         // Remove size specifications like varchar(255), decimal(10,2)
         var parenIndex = dbType.IndexOf('(');
@@ -89,14 +114,8 @@ public class TypeMapper
         };
     }
 
-    private static bool IsValueType(string csharpType)
-    {
-        return csharpType switch
-        {
-            "int" or "long" or "short" or "byte" or "bool" or "decimal" 
-                or "double" or "float" or "DateTime" or "DateOnly" or "TimeOnly" 
-                or "DateTimeOffset" or "Guid" => true,
-            _ => false
-        };
-    }
+    private static bool IsValueType(string csharpType) =>
+        csharpType is "int" or "long" or "short" or "byte" or "bool" or "decimal" 
+            or "double" or "float" or "DateTime" or "DateOnly" or "TimeOnly" 
+            or "DateTimeOffset" or "Guid";
 }

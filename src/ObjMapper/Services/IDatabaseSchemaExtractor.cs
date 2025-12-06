@@ -13,6 +13,11 @@ public interface IDatabaseSchemaExtractor
     Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter = null);
     
     /// <summary>
+    /// Extracts the complete database schema with optional type inference.
+    /// </summary>
+    Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter, bool enableTypeInference);
+    
+    /// <summary>
     /// Tests the database connection.
     /// </summary>
     Task<bool> TestConnectionAsync(string connectionString);

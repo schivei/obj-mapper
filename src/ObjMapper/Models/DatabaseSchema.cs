@@ -9,4 +9,5 @@ public class DatabaseSchema
     public List<RelationshipInfo> Relationships { get; set; } = [];
     public List<IndexInfo> Indexes { get; set; } = [];
     public List<ScalarFunctionInfo> ScalarFunctions { get; set; } = [];
+    public List<StoredProcedureInfo> StoredProcedures { get; set; } = [];
 }

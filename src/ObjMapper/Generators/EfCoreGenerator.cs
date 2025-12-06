@@ -161,6 +161,347 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         return sb.ToString();
     }
 
+    public Dictionary<string, string> GenerateStoredProcedures(DatabaseSchema schema)
+    {
+        var procedures = new Dictionary<string, string>();
+        
+        if (schema.StoredProcedures.Count == 0)
+            return procedures;
+        
+        // Generate result types for tabular procedures
+        var resultTypes = GenerateStoredProcedureResultTypes(schema);
+        if (!string.IsNullOrEmpty(resultTypes))
+        {
+            procedures["StoredProcedureResultTypes.cs"] = resultTypes;
+        }
+        
+        // Generate the stored procedures extension methods
+        var code = GenerateStoredProceduresClass(schema);
+        procedures["StoredProcedures.cs"] = code;
+        
+        return procedures;
+    }
+    
+    private string GenerateStoredProceduresClass(DatabaseSchema schema)
+    {
+        var sb = new StringBuilder();
+        
+        sb.AppendLine("using Microsoft.EntityFrameworkCore;");
+        sb.AppendLine("using Microsoft.Data.SqlClient;");
+        sb.AppendLine("using System.Data;");
+        sb.AppendLine();
+        sb.AppendLine($"namespace {_namespace};");
+        sb.AppendLine();
+        sb.AppendLine("/// <summary>");
+        sb.AppendLine("/// Extension methods for executing stored procedures.");
+        sb.AppendLine("/// </summary>");
+        sb.AppendLine("public static partial class StoredProcedureExtensions");
+        sb.AppendLine("{");
+        
+        foreach (var proc in schema.StoredProcedures)
+        {
+            GenerateStoredProcedureMethod(sb, proc);
+        }
+        
+        sb.AppendLine("}");
+        
+        return sb.ToString();
+    }
+    
+    private void GenerateStoredProcedureMethod(StringBuilder sb, StoredProcedureInfo proc)
+    {
+        var methodName = NamingHelper.ToPascalCase(proc.Name);
+        var asyncMethodName = $"{methodName}Async";
+        
+        // Generate XML comment
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine($"    /// Executes stored procedure {proc.FullName}.");
+        sb.AppendLine("    /// </summary>");
+        
+        // Build parameters
+        var inputParams = proc.Parameters.Where(p => !p.IsOutput).OrderBy(p => p.OrdinalPosition).ToList();
+        var outputParams = proc.Parameters.Where(p => p.IsOutput).OrderBy(p => p.OrdinalPosition).ToList();
+        
+        var methodParams = new List<string> { "this DbContext context" };
+        methodParams.AddRange(inputParams.Select(p => 
+            $"{_typeMapper.MapToCSharpType(p.DataType, true)} {NamingHelper.ToCamelCase(p.Name)}"));
+        
+        var methodParamList = string.Join(", ", methodParams);
+        
+        switch (proc.OutputType)
+        {
+            case StoredProcedureOutputType.None:
+                GenerateVoidProcedure(sb, proc, methodName, asyncMethodName, methodParamList, inputParams);
+                break;
+            case StoredProcedureOutputType.Scalar:
+                GenerateScalarProcedure(sb, proc, methodName, asyncMethodName, methodParamList, inputParams, outputParams);
+                break;
+            case StoredProcedureOutputType.Tabular:
+                GenerateTabularProcedure(sb, proc, methodName, asyncMethodName, methodParamList, inputParams);
+                break;
+        }
+    }
+    
+    private void GenerateVoidProcedure(StringBuilder sb, StoredProcedureInfo proc, string methodName, 
+        string asyncMethodName, string methodParamList, List<StoredProcedureParameter> inputParams)
+    {
+        // Sync method
+        sb.AppendLine($"    public static void {methodName}({methodParamList})");
+        sb.AppendLine("    {");
+        GenerateExecuteSql(sb, proc, inputParams, "ExecuteSqlRaw");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        
+        // Async method
+        sb.AppendLine($"    public static async Task {asyncMethodName}({methodParamList}, CancellationToken cancellationToken = default)");
+        sb.AppendLine("    {");
+        GenerateExecuteSql(sb, proc, inputParams, "ExecuteSqlRawAsync", true);
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+    
+    private void GenerateScalarProcedure(StringBuilder sb, StoredProcedureInfo proc, string methodName, 
+        string asyncMethodName, string methodParamList, List<StoredProcedureParameter> inputParams,
+        List<StoredProcedureParameter> outputParams)
+    {
+        var outputParam = outputParams.FirstOrDefault();
+        var returnType = outputParam != null 
+            ? _typeMapper.MapToCSharpType(outputParam.DataType, true) 
+            : "object?";
+        
+        // Sync method
+        sb.AppendLine($"    public static {returnType} {methodName}({methodParamList})");
+        sb.AppendLine("    {");
+        GenerateScalarExecute(sb, proc, inputParams, outputParam, returnType);
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        
+        // Async method
+        sb.AppendLine($"    public static async Task<{returnType}> {asyncMethodName}({methodParamList}, CancellationToken cancellationToken = default)");
+        sb.AppendLine("    {");
+        GenerateScalarExecuteAsync(sb, proc, inputParams, outputParam, returnType);
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+    
+    private void GenerateTabularProcedure(StringBuilder sb, StoredProcedureInfo proc, string methodName, 
+        string asyncMethodName, string methodParamList, List<StoredProcedureParameter> inputParams)
+    {
+        var resultTypeName = $"{NamingHelper.ToPascalCase(proc.Name)}Result";
+        
+        // Sync method
+        sb.AppendLine($"    public static List<{resultTypeName}> {methodName}({methodParamList})");
+        sb.AppendLine("    {");
+        GenerateTabularExecute(sb, proc, inputParams, resultTypeName);
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        
+        // Async method  
+        sb.AppendLine($"    public static async Task<List<{resultTypeName}>> {asyncMethodName}({methodParamList}, CancellationToken cancellationToken = default)");
+        sb.AppendLine("    {");
+        GenerateTabularExecuteAsync(sb, proc, inputParams, resultTypeName);
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+    
+    private static void GenerateExecuteSql(StringBuilder sb, StoredProcedureInfo proc, 
+        List<StoredProcedureParameter> inputParams, string executeMethod, bool isAsync = false)
+    {
+        var paramNames = inputParams.Select(p => $"@{p.Name}").ToList();
+        var sql = $"EXEC {proc.FullName} {string.Join(", ", paramNames)}";
+        
+        sb.AppendLine($"        var sql = \"{sql}\";");
+        
+        if (inputParams.Count > 0)
+        {
+            sb.AppendLine("        var parameters = new object[]");
+            sb.AppendLine("        {");
+            foreach (var param in inputParams)
+            {
+                var camelName = NamingHelper.ToCamelCase(param.Name);
+                sb.AppendLine($"            new SqlParameter(\"@{param.Name}\", {camelName} ?? (object)DBNull.Value),");
+            }
+            sb.AppendLine("        };");
+            var awaitPrefix = isAsync ? "await " : "";
+            var asyncSuffix = isAsync ? ", cancellationToken" : "";
+            sb.AppendLine($"        {awaitPrefix}context.Database.{executeMethod}(sql, parameters{asyncSuffix});");
+        }
+        else
+        {
+            var awaitPrefix = isAsync ? "await " : "";
+            var asyncSuffix = isAsync ? ", cancellationToken" : "";
+            sb.AppendLine($"        {awaitPrefix}context.Database.{executeMethod}(sql{asyncSuffix});");
+        }
+    }
+    
+    private static void GenerateScalarExecute(StringBuilder sb, StoredProcedureInfo proc,
+        List<StoredProcedureParameter> inputParams, StoredProcedureParameter? outputParam, string returnType)
+    {
+        sb.AppendLine("        using var connection = context.Database.GetDbConnection();");
+        sb.AppendLine("        using var command = connection.CreateCommand();");
+        sb.AppendLine($"        command.CommandText = \"{proc.FullName}\";");
+        sb.AppendLine("        command.CommandType = CommandType.StoredProcedure;");
+        sb.AppendLine();
+        
+        foreach (var param in inputParams)
+        {
+            var camelName = NamingHelper.ToCamelCase(param.Name);
+            sb.AppendLine($"        command.Parameters.Add(new SqlParameter(\"@{param.Name}\", {camelName} ?? (object)DBNull.Value));");
+        }
+        
+        if (outputParam != null)
+        {
+            sb.AppendLine($"        var outputParameter = new SqlParameter(\"@{outputParam.Name}\", SqlDbType.VarChar, -1);");
+            sb.AppendLine("        outputParameter.Direction = ParameterDirection.Output;");
+            sb.AppendLine("        command.Parameters.Add(outputParameter);");
+        }
+        
+        sb.AppendLine();
+        sb.AppendLine("        connection.Open();");
+        sb.AppendLine("        command.ExecuteNonQuery();");
+        sb.AppendLine();
+        
+        if (outputParam != null)
+        {
+            sb.AppendLine($"        return ({returnType})outputParameter.Value;");
+        }
+        else
+        {
+            sb.AppendLine("        return default;");
+        }
+    }
+    
+    private static void GenerateScalarExecuteAsync(StringBuilder sb, StoredProcedureInfo proc,
+        List<StoredProcedureParameter> inputParams, StoredProcedureParameter? outputParam, string returnType)
+    {
+        sb.AppendLine("        await using var connection = context.Database.GetDbConnection();");
+        sb.AppendLine("        await using var command = connection.CreateCommand();");
+        sb.AppendLine($"        command.CommandText = \"{proc.FullName}\";");
+        sb.AppendLine("        command.CommandType = CommandType.StoredProcedure;");
+        sb.AppendLine();
+        
+        foreach (var param in inputParams)
+        {
+            var camelName = NamingHelper.ToCamelCase(param.Name);
+            sb.AppendLine($"        command.Parameters.Add(new SqlParameter(\"@{param.Name}\", {camelName} ?? (object)DBNull.Value));");
+        }
+        
+        if (outputParam != null)
+        {
+            sb.AppendLine($"        var outputParameter = new SqlParameter(\"@{outputParam.Name}\", SqlDbType.VarChar, -1);");
+            sb.AppendLine("        outputParameter.Direction = ParameterDirection.Output;");
+            sb.AppendLine("        command.Parameters.Add(outputParameter);");
+        }
+        
+        sb.AppendLine();
+        sb.AppendLine("        await connection.OpenAsync(cancellationToken);");
+        sb.AppendLine("        await command.ExecuteNonQueryAsync(cancellationToken);");
+        sb.AppendLine();
+        
+        if (outputParam != null)
+        {
+            sb.AppendLine($"        return ({returnType})outputParameter.Value;");
+        }
+        else
+        {
+            sb.AppendLine("        return default;");
+        }
+    }
+    
+    private void GenerateTabularExecute(StringBuilder sb, StoredProcedureInfo proc, 
+        List<StoredProcedureParameter> inputParams, string resultTypeName)
+    {
+        var paramNames = inputParams.Select(p => $"@{p.Name}").ToList();
+        var sql = $"EXEC {proc.FullName} {string.Join(", ", paramNames)}";
+        
+        sb.AppendLine($"        var sql = \"{sql}\";");
+        
+        if (inputParams.Count > 0)
+        {
+            sb.AppendLine("        var parameters = new object[]");
+            sb.AppendLine("        {");
+            foreach (var param in inputParams)
+            {
+                var camelName = NamingHelper.ToCamelCase(param.Name);
+                sb.AppendLine($"            new SqlParameter(\"@{param.Name}\", {camelName} ?? (object)DBNull.Value),");
+            }
+            sb.AppendLine("        };");
+            sb.AppendLine($"        return context.Set<{resultTypeName}>().FromSqlRaw(sql, parameters).ToList();");
+        }
+        else
+        {
+            sb.AppendLine($"        return context.Set<{resultTypeName}>().FromSqlRaw(sql).ToList();");
+        }
+    }
+    
+    private void GenerateTabularExecuteAsync(StringBuilder sb, StoredProcedureInfo proc, 
+        List<StoredProcedureParameter> inputParams, string resultTypeName)
+    {
+        var paramNames = inputParams.Select(p => $"@{p.Name}").ToList();
+        var sql = $"EXEC {proc.FullName} {string.Join(", ", paramNames)}";
+        
+        sb.AppendLine($"        var sql = \"{sql}\";");
+        
+        if (inputParams.Count > 0)
+        {
+            sb.AppendLine("        var parameters = new object[]");
+            sb.AppendLine("        {");
+            foreach (var param in inputParams)
+            {
+                var camelName = NamingHelper.ToCamelCase(param.Name);
+                sb.AppendLine($"            new SqlParameter(\"@{param.Name}\", {camelName} ?? (object)DBNull.Value),");
+            }
+            sb.AppendLine("        };");
+            sb.AppendLine($"        return await context.Set<{resultTypeName}>().FromSqlRaw(sql, parameters).ToListAsync(cancellationToken);");
+        }
+        else
+        {
+            sb.AppendLine($"        return await context.Set<{resultTypeName}>().FromSqlRaw(sql).ToListAsync(cancellationToken);");
+        }
+    }
+    
+    private string GenerateStoredProcedureResultTypes(DatabaseSchema schema)
+    {
+        var tabularProcs = schema.StoredProcedures
+            .Where(p => p.OutputType == StoredProcedureOutputType.Tabular && p.ResultColumns.Count > 0)
+            .ToList();
+            
+        if (tabularProcs.Count == 0)
+            return string.Empty;
+        
+        var sb = new StringBuilder();
+        
+        sb.AppendLine("using Microsoft.EntityFrameworkCore;");
+        sb.AppendLine();
+        sb.AppendLine($"namespace {_namespace};");
+        sb.AppendLine();
+        
+        foreach (var proc in tabularProcs)
+        {
+            var typeName = $"{NamingHelper.ToPascalCase(proc.Name)}Result";
+            
+            sb.AppendLine($"/// <summary>");
+            sb.AppendLine($"/// Result type for stored procedure {proc.FullName}.");
+            sb.AppendLine($"/// </summary>");
+            sb.AppendLine($"[Keyless]");
+            sb.AppendLine($"public class {typeName}");
+            sb.AppendLine("{");
+            
+            foreach (var col in proc.ResultColumns.OrderBy(c => c.OrdinalPosition))
+            {
+                var propName = NamingHelper.ToPascalCase(col.Name);
+                var propType = _typeMapper.MapToCSharpType(col.DataType, col.IsNullable);
+                
+                sb.AppendLine($"    public {propType} {propName} {{ get; set; }}");
+            }
+            
+            sb.AppendLine("}");
+            sb.AppendLine();
+        }
+        
+        return sb.ToString();
+    }
+
     /// <summary>
     /// Filters tables to remove duplicates that would generate the same entity name.
     /// When duplicates are found, the pluralized version is kept (preference for table names like "users" over "user").

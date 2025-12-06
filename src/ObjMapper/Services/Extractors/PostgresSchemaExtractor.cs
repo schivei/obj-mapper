@@ -36,6 +36,27 @@ public class PostgresSchemaExtractor : BaseSchemaExtractor
         return tables;
     }
 
+    protected override async Task<List<(string name, string schema)>> GetViewsAsync(DbConnection connection, string schemaName)
+    {
+        var views = new List<(string name, string schema)>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT table_name, table_schema 
+            FROM information_schema.views 
+            WHERE table_schema = @schema
+            ORDER BY table_name";
+        AddParameter(command, "schema", schemaName);
+        
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            views.Add((reader.GetString(0), reader.GetString(1)));
+        }
+        
+        return views;
+    }
+
     protected override async Task<List<ColumnInfo>> GetColumnsAsync(DbConnection connection, string schemaName, string tableName)
     {
         var columns = new List<ColumnInfo>();
@@ -219,6 +240,94 @@ public class PostgresSchemaExtractor : BaseSchemaExtractor
         }
         
         return parameters;
+    }
+
+    protected override async Task<List<StoredProcedureInfo>> GetStoredProceduresAsync(DbConnection connection, string schemaName)
+    {
+        var procedures = new List<StoredProcedureInfo>();
+        var procList = new List<(string schema, string name, string specificName)>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                r.routine_schema,
+                r.routine_name,
+                r.specific_name
+            FROM information_schema.routines r
+            WHERE r.routine_schema = @schema
+              AND r.routine_type = 'PROCEDURE'
+            ORDER BY r.routine_name";
+        AddParameter(command, "schema", schemaName);
+        
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                procList.Add((reader.GetString(0), reader.GetString(1), reader.GetString(2)));
+            }
+        }
+        
+        foreach (var (procSchema, procName, specificName) in procList)
+        {
+            var procInfo = new StoredProcedureInfo
+            {
+                Schema = procSchema,
+                Name = procName,
+                Parameters = await GetProcedureParametersAsync(connection, procSchema, specificName)
+            };
+            
+            // Determine output type based on OUT parameters and procedure definition
+            procInfo.OutputType = DetermineProcedureOutputType(procInfo.Parameters);
+            
+            procedures.Add(procInfo);
+        }
+        
+        return procedures;
+    }
+
+    private async Task<List<StoredProcedureParameter>> GetProcedureParametersAsync(DbConnection connection, string schemaName, string specificName)
+    {
+        var parameters = new List<StoredProcedureParameter>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                COALESCE(p.parameter_name, 'p' || p.ordinal_position::text) AS param_name,
+                p.data_type,
+                p.ordinal_position,
+                p.parameter_mode
+            FROM information_schema.parameters p
+            WHERE p.specific_schema = @schema 
+              AND p.specific_name = @specificName
+            ORDER BY p.ordinal_position";
+        AddParameter(command, "schema", schemaName);
+        AddParameter(command, "specificName", specificName);
+        
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var mode = reader.GetString(3);
+            parameters.Add(new StoredProcedureParameter
+            {
+                Name = reader.GetString(0),
+                DataType = reader.GetString(1),
+                OrdinalPosition = reader.GetInt32(2),
+                IsOutput = mode == "OUT" || mode == "INOUT"
+            });
+        }
+        
+        return parameters;
+    }
+
+    private static StoredProcedureOutputType DetermineProcedureOutputType(List<StoredProcedureParameter> parameters)
+    {
+        var outputParams = parameters.Count(p => p.IsOutput);
+        return outputParams switch
+        {
+            0 => StoredProcedureOutputType.None,
+            1 => StoredProcedureOutputType.Scalar,
+            _ => StoredProcedureOutputType.Tabular
+        };
     }
 
     private static void ProcessForeignKeyRow(DbDataReader reader,

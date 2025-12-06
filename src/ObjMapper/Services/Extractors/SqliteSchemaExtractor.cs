@@ -35,6 +35,26 @@ public class SqliteSchemaExtractor : BaseSchemaExtractor
         return tables;
     }
 
+    protected override async Task<List<(string name, string schema)>> GetViewsAsync(DbConnection connection, string schemaName)
+    {
+        var views = new List<(string name, string schema)>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT name 
+            FROM sqlite_master 
+            WHERE type='view' AND name NOT LIKE 'sqlite_%'
+            ORDER BY name";
+        
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            views.Add((reader.GetString(0), "main"));
+        }
+        
+        return views;
+    }
+
     protected override async Task<List<ColumnInfo>> GetColumnsAsync(DbConnection connection, string schemaName, string tableName)
     {
         var columns = new List<ColumnInfo>();
@@ -180,5 +200,11 @@ public class SqliteSchemaExtractor : BaseSchemaExtractor
         // SQLite doesn't support user-defined functions stored in the database
         // They are registered at runtime via application code
         return Task.FromResult(new List<ScalarFunctionInfo>());
+    }
+
+    protected override Task<List<StoredProcedureInfo>> GetStoredProceduresAsync(DbConnection connection, string schemaName)
+    {
+        // SQLite doesn't support stored procedures
+        return Task.FromResult(new List<StoredProcedureInfo>());
     }
 }

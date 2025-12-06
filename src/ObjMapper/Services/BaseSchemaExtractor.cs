@@ -21,18 +21,46 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
     protected abstract string DefaultSchemaName { get; }
 
     public Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter = null) =>
-        ExtractSchemaAsync(connectionString, schemaFilter, enableTypeInference: false);
+        ExtractSchemaAsync(connectionString, new SchemaExtractionOptions 
+        { 
+            SchemaFilter = schemaFilter, 
+            EnableTypeInference = false, 
+            EnableDataSampling = false 
+        });
 
-    public virtual async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter, bool enableTypeInference)
+    public Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter, bool enableTypeInference) =>
+        ExtractSchemaAsync(connectionString, new SchemaExtractionOptions 
+        { 
+            SchemaFilter = schemaFilter, 
+            EnableTypeInference = enableTypeInference, 
+            EnableDataSampling = true 
+        });
+
+    public Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter, bool enableTypeInference, bool enableDataSampling) =>
+        ExtractSchemaAsync(connectionString, new SchemaExtractionOptions 
+        { 
+            SchemaFilter = schemaFilter, 
+            EnableTypeInference = enableTypeInference, 
+            EnableDataSampling = enableDataSampling 
+        });
+
+    public virtual async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, SchemaExtractionOptions options)
     {
         var schema = new DatabaseSchema();
-        var schemaName = schemaFilter ?? DefaultSchemaName;
+        var schemaName = options.SchemaFilter ?? DefaultSchemaName;
         
         await using var connection = CreateConnection(connectionString);
         await connection.OpenAsync();
         
         // Template method: Get all tables
         var tables = await GetTablesAsync(connection, schemaName);
+        
+        // Get views if enabled
+        if (options.IncludeViews)
+        {
+            var views = await GetViewsAsync(connection, schemaName);
+            tables.AddRange(views);
+        }
         
         foreach (var (tableName, tableSchema) in tables)
         {
@@ -45,11 +73,19 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
             // Get columns
             tableInfo.Columns = await GetColumnsAsync(connection, tableSchema, tableName);
             
-            // Analyze columns for potential boolean and GUID types if type inference is enabled
-            if (enableTypeInference)
+            // Apply name-based inference first (fast, no DB queries)
+            if (options.EnableTypeInference)
             {
-                await AnalyzeBooleanColumnsAsync(connection, tableInfo);
-                await AnalyzeGuidColumnsAsync(connection, tableInfo);
+                ApplyNameBasedInference(tableInfo);
+            }
+            
+            // Analyze columns for potential boolean and GUID types with data sampling
+            // Only run expensive queries if data sampling is enabled AND type inference is enabled
+            // AND the column wasn't already inferred from its name
+            if (options.EnableTypeInference && options.EnableDataSampling)
+            {
+                await AnalyzeBooleanColumnsAsync(connection, tableInfo, onlyUninferred: true);
+                await AnalyzeGuidColumnsAsync(connection, tableInfo, onlyUninferred: true);
             }
             
             // Get indexes
@@ -64,8 +100,17 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
         // Populate table-level relationships (common logic)
         PopulateTableRelationships(schema);
         
-        // Get scalar functions
-        schema.ScalarFunctions = await GetScalarFunctionsAsync(connection, schemaName);
+        // Get scalar functions if enabled
+        if (options.IncludeUserDefinedFunctions)
+        {
+            schema.ScalarFunctions = await GetScalarFunctionsAsync(connection, schemaName);
+        }
+        
+        // Get stored procedures if enabled
+        if (options.IncludeStoredProcedures)
+        {
+            schema.StoredProcedures = await GetStoredProceduresAsync(connection, schemaName);
+        }
         
         return schema;
     }
@@ -95,6 +140,15 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
     protected abstract Task<List<(string name, string schema)>> GetTablesAsync(DbConnection connection, string schemaName);
     
     /// <summary>
+    /// Gets all views from the database.
+    /// </summary>
+    protected virtual Task<List<(string name, string schema)>> GetViewsAsync(DbConnection connection, string schemaName)
+    {
+        // Default implementation returns empty list - subclasses can override
+        return Task.FromResult(new List<(string name, string schema)>());
+    }
+    
+    /// <summary>
     /// Gets all columns for a specific table.
     /// </summary>
     protected abstract Task<List<ColumnInfo>> GetColumnsAsync(DbConnection connection, string schemaName, string tableName);
@@ -113,16 +167,125 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
     /// Gets all scalar functions from the database.
     /// </summary>
     protected abstract Task<List<ScalarFunctionInfo>> GetScalarFunctionsAsync(DbConnection connection, string schemaName);
+    
+    /// <summary>
+    /// Gets all stored procedures from the database.
+    /// </summary>
+    protected abstract Task<List<StoredProcedureInfo>> GetStoredProceduresAsync(DbConnection connection, string schemaName);
+
+    /// <summary>
+    /// Applies fast name-based inference without querying the database.
+    /// Uses column name patterns like is_*, has_*, *_flag for boolean,
+    /// and uuid, *_guid, *_id patterns for GUID inference.
+    /// </summary>
+    private static void ApplyNameBasedInference(TableInfo tableInfo)
+    {
+        foreach (var column in tableInfo.Columns)
+        {
+            var lowerName = column.Column.ToLowerInvariant();
+            var lowerType = column.Type.ToLowerInvariant();
+            
+            // Boolean inference from column name patterns
+            if (IsBooleanNamePattern(lowerName) && IsSmallIntegerType(lowerType))
+            {
+                column.InferredAsBoolean = true;
+            }
+            
+            // GUID inference from column name patterns
+            if (IsGuidNamePattern(lowerName) && IsGuidCompatibleType(lowerType))
+            {
+                column.InferredAsGuid = true;
+            }
+        }
+    }
+    
+    private static bool IsBooleanNamePattern(string columnName)
+    {
+        // Common boolean naming patterns
+        return columnName.StartsWith("is_") ||
+               columnName.StartsWith("has_") ||
+               columnName.StartsWith("can_") ||
+               columnName.StartsWith("should_") ||
+               columnName.StartsWith("will_") ||
+               columnName.StartsWith("allow_") ||
+               columnName.StartsWith("enable_") ||
+               columnName.StartsWith("disable_") ||
+               columnName.EndsWith("_flag") ||
+               columnName.EndsWith("_enabled") ||
+               columnName.EndsWith("_disabled") ||
+               columnName.EndsWith("_active") ||
+               columnName.EndsWith("_deleted") ||
+               columnName.EndsWith("_visible") ||
+               columnName.EndsWith("_hidden") ||
+               columnName.EndsWith("_required") ||
+               columnName == "active" ||
+               columnName == "enabled" ||
+               columnName == "disabled" ||
+               columnName == "deleted" ||
+               columnName == "visible" ||
+               columnName == "hidden" ||
+               columnName == "published" ||
+               columnName == "approved" ||
+               columnName == "verified" ||
+               columnName == "confirmed";
+    }
+    
+    private static bool IsSmallIntegerType(string typeName)
+    {
+        return typeName.Contains("tinyint") ||
+               typeName.Contains("smallint") ||
+               typeName.Contains("bit") ||
+               typeName.Contains("boolean") ||
+               typeName.Contains("bool") ||
+               typeName == "int2" ||
+               typeName == "int1";
+    }
+    
+    private static bool IsGuidNamePattern(string columnName)
+    {
+        return columnName == "uuid" ||
+               columnName == "guid" ||
+               columnName.EndsWith("_uuid") ||
+               columnName.EndsWith("_guid") ||
+               columnName.EndsWith("uuid") ||
+               columnName.EndsWith("guid") ||
+               columnName == "correlation_id" ||
+               columnName == "tracking_id" ||
+               columnName == "external_id" ||
+               columnName == "request_id" ||
+               columnName == "session_id" ||
+               columnName == "transaction_id";
+    }
+    
+    private static bool IsGuidCompatibleType(string typeName)
+    {
+        return typeName.Contains("char(36)") ||
+               typeName.Contains("varchar(36)") ||
+               typeName.Contains("character(36)") ||
+               typeName == "uuid" ||
+               typeName == "uniqueidentifier";
+    }
 
     /// <summary>
     /// Analyzes columns for potential boolean types based on data values.
     /// </summary>
-    private async Task AnalyzeBooleanColumnsAsync(DbConnection connection, TableInfo tableInfo)
+    /// <param name="connection">Database connection.</param>
+    /// <param name="tableInfo">Table information.</param>
+    /// <param name="onlyUninferred">If true, only analyze columns not already inferred from name patterns.</param>
+    private async Task AnalyzeBooleanColumnsAsync(DbConnection connection, TableInfo tableInfo, bool onlyUninferred = false)
     {
+        // Filter columns - only those not already inferred if onlyUninferred is true
+        var columnsToAnalyze = onlyUninferred
+            ? tableInfo.Columns.Where(c => !c.InferredAsBoolean).ToList()
+            : tableInfo.Columns;
+            
+        if (!columnsToAnalyze.Any())
+            return;
+            
         var booleanAnalysis = await BooleanColumnAnalyzer.AnalyzeColumnsAsync(
-            connection, tableInfo.Schema, tableInfo.Name, tableInfo.Columns, DatabaseType);
+            connection, tableInfo.Schema, tableInfo.Name, columnsToAnalyze, DatabaseType);
         
-        foreach (var column in tableInfo.Columns.Where(c => 
+        foreach (var column in columnsToAnalyze.Where(c => 
             booleanAnalysis.TryGetValue(c.Column, out var couldBeBoolean) && couldBeBoolean))
         {
             column.InferredAsBoolean = true;
@@ -132,12 +295,23 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
     /// <summary>
     /// Analyzes columns for potential GUID types based on data values.
     /// </summary>
-    private async Task AnalyzeGuidColumnsAsync(DbConnection connection, TableInfo tableInfo)
+    /// <param name="connection">Database connection.</param>
+    /// <param name="tableInfo">Table information.</param>
+    /// <param name="onlyUninferred">If true, only analyze columns not already inferred from name patterns.</param>
+    private async Task AnalyzeGuidColumnsAsync(DbConnection connection, TableInfo tableInfo, bool onlyUninferred = false)
     {
+        // Filter columns - only those not already inferred if onlyUninferred is true
+        var columnsToAnalyze = onlyUninferred
+            ? tableInfo.Columns.Where(c => !c.InferredAsGuid).ToList()
+            : tableInfo.Columns;
+            
+        if (!columnsToAnalyze.Any())
+            return;
+            
         var guidAnalysis = await GuidColumnAnalyzer.AnalyzeColumnsAsync(
-            connection, tableInfo.Schema, tableInfo.Name, tableInfo.Columns, DatabaseType);
+            connection, tableInfo.Schema, tableInfo.Name, columnsToAnalyze, DatabaseType);
         
-        foreach (var column in tableInfo.Columns.Where(c => 
+        foreach (var column in columnsToAnalyze.Where(c => 
             guidAnalysis.TryGetValue(c.Column, out var couldBeGuid) && couldBeGuid))
         {
             column.InferredAsGuid = true;

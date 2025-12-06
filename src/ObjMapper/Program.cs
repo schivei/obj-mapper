@@ -362,7 +362,7 @@ return await rootCommand.Parse(args).InvokeAsync();
 static async Task ExecuteAsync(CommandOptions options)
 {
     using var console = new ConsoleOutputService();
-    var filesGenerated = 0;
+    var result = new ExecutionResult();
     
     try
     {
@@ -392,7 +392,8 @@ static async Task ExecuteAsync(CommandOptions options)
                 var detected = SchemaExtractorFactory.DetectDatabaseType(options.ConnectionString!);
                 if (detected == null)
                 {
-                    console.WriteError("Could not auto-detect database type. Please specify -d/--database option.");
+                    result.SetCriticalError("Could not auto-detect database type. Please specify -d/--database option.");
+                    console.WriteError(result.Errors[^1]);
                     console.WriteSummary(false);
                     return;
                 }
@@ -419,7 +420,8 @@ static async Task ExecuteAsync(CommandOptions options)
                 
                 if (!connected)
                 {
-                    console.WriteError("Could not connect to database. Please check your connection string.");
+                    result.SetCriticalError("Could not connect to database. Please check your connection string.");
+                    console.WriteError(result.Errors[^1]);
                     console.WriteSummary(false);
                     return;
                 }
@@ -455,12 +457,14 @@ static async Task ExecuteAsync(CommandOptions options)
             }
             catch (NotSupportedException ex)
             {
+                result.SetCriticalError(ex.Message);
                 console.WriteError(ex.Message);
                 console.WriteSummary(false);
                 return;
             }
             catch (Exception ex)
             {
+                result.SetCriticalError($"Error extracting schema: {ex.Message}");
                 console.WriteError($"Error extracting schema: {ex.Message}");
                 console.WriteSummary(false);
                 return;
@@ -474,21 +478,24 @@ static async Task ExecuteAsync(CommandOptions options)
             // Validate input files
             if (options.SchemaFile == null || !options.SchemaFile.Exists)
             {
-                console.WriteError($"Schema file not found: {options.SchemaFile?.FullName ?? "(not specified)"}");
+                result.SetCriticalError($"Schema file not found: {options.SchemaFile?.FullName ?? "(not specified)"}");
+                console.WriteError(result.Errors[^1]);
                 console.WriteSummary(false);
                 return;
             }
 
             if (options.RelationshipsFile != null && !options.RelationshipsFile.Exists)
             {
-                console.WriteError($"Relationships file not found: {options.RelationshipsFile.FullName}");
+                result.SetCriticalError($"Relationships file not found: {options.RelationshipsFile.FullName}");
+                console.WriteError(result.Errors[^1]);
                 console.WriteSummary(false);
                 return;
             }
 
             if (options.IndexesFile != null && !options.IndexesFile.Exists)
             {
-                console.WriteError($"Indexes file not found: {options.IndexesFile.FullName}");
+                result.SetCriticalError($"Indexes file not found: {options.IndexesFile.FullName}");
+                console.WriteError(result.Errors[^1]);
                 console.WriteSummary(false);
                 return;
             }
@@ -573,84 +580,154 @@ static async Task ExecuteAsync(CommandOptions options)
             _ => throw new InvalidOperationException($"Unknown mapping type: {mapType}")
         };
 
-        // Create output directories
+        // Define output directories (will be created only when writing files)
         var entitiesDir = Path.Combine(options.OutputDir.FullName, "Entities");
         var configurationsDir = Path.Combine(options.OutputDir.FullName, "Configurations");
-        
-        Directory.CreateDirectory(entitiesDir);
-        Directory.CreateDirectory(configurationsDir);
 
         console.WriteSection("Generating Code");
 
-        // Generate entities
-        var entities = generator.GenerateEntities(schema);
-        var totalFiles = entities.Count;
-        var configurations = generator.GenerateConfigurations(schema);
-        totalFiles += configurations.Count;
-        var scalarFunctions = generator.GenerateScalarFunctions(schema);
-        totalFiles += scalarFunctions.Count;
-        var storedProceduresDict = generator.GenerateStoredProcedures(schema);
-        totalFiles += storedProceduresDict.Count;
-        totalFiles += 1; // DbContext
+        // Generate all code in memory first
+        Dictionary<string, string> entities;
+        Dictionary<string, string> configurations;
+        Dictionary<string, string> scalarFunctions;
+        Dictionary<string, string> storedProceduresDict;
+        string dbContextContent;
         
-        var currentStep = 0;
-        await console.WithProgressAsync("Generating files...", totalFiles, async (updateProgress) =>
+        try
         {
-            // Generate entities
-            foreach (var (fileName, content) in entities)
-            {
-                currentStep++;
-                updateProgress(currentStep, $"Entity: {fileName}");
-                var filePath = Path.Combine(entitiesDir, fileName);
-                await File.WriteAllTextAsync(filePath, content);
-                filesGenerated++;
-            }
+            entities = generator.GenerateEntities(schema);
+        }
+        catch (Exception ex)
+        {
+            result.AddError($"Error generating entities: {ex.Message}");
+            console.WriteWarning($"Error generating entities: {ex.Message}");
+            entities = [];
+        }
+        
+        try
+        {
+            configurations = generator.GenerateConfigurations(schema);
+        }
+        catch (Exception ex)
+        {
+            result.AddError($"Error generating configurations: {ex.Message}");
+            console.WriteWarning($"Error generating configurations: {ex.Message}");
+            configurations = [];
+        }
+        
+        try
+        {
+            scalarFunctions = generator.GenerateScalarFunctions(schema);
+        }
+        catch (Exception ex)
+        {
+            result.AddError($"Error generating scalar functions: {ex.Message}");
+            console.WriteWarning($"Error generating scalar functions: {ex.Message}");
+            scalarFunctions = [];
+        }
+        
+        try
+        {
+            storedProceduresDict = generator.GenerateStoredProcedures(schema);
+        }
+        catch (Exception ex)
+        {
+            result.AddError($"Error generating stored procedures: {ex.Message}");
+            console.WriteWarning($"Error generating stored procedures: {ex.Message}");
+            storedProceduresDict = [];
+        }
+        
+        try
+        {
+            dbContextContent = generator.GenerateDbContext(schema, options.ContextName);
+        }
+        catch (Exception ex)
+        {
+            result.SetCriticalError($"Error generating DbContext: {ex.Message}");
+            console.WriteError($"Error generating DbContext: {ex.Message}");
+            console.WriteSummary(false);
+            return;
+        }
 
-            // Generate configurations
-            foreach (var (fileName, content) in configurations)
-            {
-                currentStep++;
-                updateProgress(currentStep, $"Configuration: {fileName}");
-                var filePath = Path.Combine(configurationsDir, fileName);
-                await File.WriteAllTextAsync(filePath, content);
-                filesGenerated++;
-            }
+        // Add all generated files to result
+        foreach (var (fileName, content) in entities)
+        {
+            result.AddGeneratedFile(Path.Combine(entitiesDir, fileName), content);
+        }
+        
+        foreach (var (fileName, content) in configurations)
+        {
+            result.AddGeneratedFile(Path.Combine(configurationsDir, fileName), content);
+        }
+        
+        result.AddGeneratedFile(Path.Combine(options.OutputDir.FullName, $"{options.ContextName}.cs"), dbContextContent);
+        
+        foreach (var (fileName, content) in scalarFunctions)
+        {
+            result.AddGeneratedFile(Path.Combine(options.OutputDir.FullName, fileName), content);
+        }
+        
+        foreach (var (fileName, content) in storedProceduresDict)
+        {
+            result.AddGeneratedFile(Path.Combine(options.OutputDir.FullName, fileName), content);
+        }
 
-            // Generate DbContext
-            currentStep++;
-            updateProgress(currentStep, $"Context: {options.ContextName}.cs");
-            var dbContextContent = generator.GenerateDbContext(schema, options.ContextName);
-            var dbContextPath = Path.Combine(options.OutputDir.FullName, $"{options.ContextName}.cs");
-            await File.WriteAllTextAsync(dbContextPath, dbContextContent);
-            filesGenerated++;
-
-            // Generate scalar functions if any
-            foreach (var (fileName, content) in scalarFunctions)
+        // Write files to disk only if no critical errors
+        if (result.CanWriteFiles)
+        {
+            var totalFiles = result.FilesCount;
+            var currentStep = 0;
+            
+            await console.WithProgressAsync("Writing files...", totalFiles, async (updateProgress) =>
             {
-                currentStep++;
-                updateProgress(currentStep, $"Functions: {fileName}");
-                var filePath = Path.Combine(options.OutputDir.FullName, fileName);
-                await File.WriteAllTextAsync(filePath, content);
-                filesGenerated++;
+                foreach (var (filePath, content) in result.GeneratedFiles)
+                {
+                    currentStep++;
+                    var fileName = Path.GetFileName(filePath);
+                    updateProgress(currentStep, $"Writing: {fileName}");
+                    
+                    var directory = Path.GetDirectoryName(filePath);
+                    if (!string.IsNullOrEmpty(directory))
+                    {
+                        Directory.CreateDirectory(directory);
+                    }
+                    await File.WriteAllTextAsync(filePath, content);
+                }
+            });
+            
+            // Show warnings if any
+            if (result.HasWarnings)
+            {
+                console.WriteSection("Warnings");
+                foreach (var warning in result.Warnings)
+                {
+                    console.WriteWarning(warning);
+                }
             }
             
-            // Generate stored procedures if any
-            foreach (var (fileName, content) in storedProceduresDict)
+            // Show non-critical errors if any
+            if (result.HasErrors)
             {
-                currentStep++;
-                updateProgress(currentStep, $"Procedures: {fileName}");
-                var filePath = Path.Combine(options.OutputDir.FullName, fileName);
-                await File.WriteAllTextAsync(filePath, content);
-                filesGenerated++;
+                console.WriteSection("Errors (non-critical)");
+                foreach (var error in result.Errors)
+                {
+                    console.WriteWarning(error);
+                }
             }
-        });
-
-        console.WriteSummary(true, filesGenerated);
+            
+            console.WriteSummary(true, result.FilesCount);
+        }
+        else
+        {
+            console.WriteError("Critical error occurred. No files were written to disk.");
+            console.WriteSummary(false);
+        }
     }
     catch (Exception ex)
     {
+        result.SetCriticalError($"Unexpected error: {ex.Message}");
         console.WriteError($"Unexpected error: {ex.Message}");
-        console.WriteSummary(false, filesGenerated);
+        console.WriteSummary(false);
     }
 }
 

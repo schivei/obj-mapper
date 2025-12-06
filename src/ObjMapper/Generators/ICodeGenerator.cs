@@ -26,4 +26,14 @@ public interface ICodeGenerator
     /// Generates the database context class.
     /// </summary>
     string GenerateDbContext(DatabaseSchema schema, string contextName);
+    
+    /// <summary>
+    /// Generates scalar function mapping classes.
+    /// </summary>
+    Dictionary<string, string> GenerateScalarFunctions(DatabaseSchema schema);
+    
+    /// <summary>
+    /// Generates stored procedure wrapper classes.
+    /// </summary>
+    Dictionary<string, string> GenerateStoredProcedures(DatabaseSchema schema);
 }

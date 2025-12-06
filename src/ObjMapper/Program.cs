@@ -266,12 +266,24 @@ var noUdfsOption = new Option<bool>("--no-udfs")
     Description = "Disable user-defined function mapping. Scalar functions will not be extracted from the database."
 };
 
+var noRelOption = new Option<bool>("--no-rel")
+{
+    Description = "Disable relationship mapping. Foreign key relationships will not be extracted. Cannot be used with --legacy."
+};
+
+var legacyOption = new Option<bool>("--legacy")
+{
+    Description = "Enable legacy relationship inference. Infers relationships from column/table naming patterns when no foreign keys exist. Cannot be used with --no-rel."
+};
+
 // Add validation for required inputs
 rootCommand.Validators.Add(result =>
 {
     var csvFile = result.GetValue(schemaFileArg);
     var connString = result.GetValue(connectionStringOption);
     var dbType = result.GetValue(databaseTypeOption);
+    var noRel = result.GetValue(noRelOption);
+    var legacy = result.GetValue(legacyOption);
     
     // Must have either CSV file or connection string
     if (csvFile == null && string.IsNullOrEmpty(connString))
@@ -284,6 +296,12 @@ rootCommand.Validators.Add(result =>
     if (csvFile != null && string.IsNullOrEmpty(connString) && string.IsNullOrEmpty(dbType))
     {
         result.AddError("Database type (-d/--database) is required when using CSV files.");
+    }
+    
+    // --no-rel and --legacy are mutually exclusive
+    if (noRel && legacy)
+    {
+        result.AddError("Options --no-rel and --legacy cannot be used together.");
     }
 });
 
@@ -306,6 +324,8 @@ rootCommand.Options.Add(noChecksOption);
 rootCommand.Options.Add(noViewsOption);
 rootCommand.Options.Add(noProcsOption);
 rootCommand.Options.Add(noUdfsOption);
+rootCommand.Options.Add(noRelOption);
+rootCommand.Options.Add(legacyOption);
 
 // Set handler
 rootCommand.SetAction(async (parseResult, cancellationToken) =>
@@ -329,7 +349,9 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         NoChecks = parseResult.GetValue(noChecksOption),
         NoViews = parseResult.GetValue(noViewsOption),
         NoProcs = parseResult.GetValue(noProcsOption),
-        NoUdfs = parseResult.GetValue(noUdfsOption)
+        NoUdfs = parseResult.GetValue(noUdfsOption),
+        NoRel = parseResult.GetValue(noRelOption),
+        Legacy = parseResult.GetValue(legacyOption)
     };
 
     await ExecuteAsync(options);

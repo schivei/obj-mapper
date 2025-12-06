@@ -36,6 +36,17 @@ public class SchemaExtractionOptions
     public bool IncludeUserDefinedFunctions { get; set; } = true;
     
     /// <summary>
+    /// Include relationships in schema extraction.
+    /// </summary>
+    public bool IncludeRelationships { get; set; } = true;
+    
+    /// <summary>
+    /// Enable legacy relationship inference based on naming patterns.
+    /// When enabled, infers relationships from column/table names when no foreign keys exist.
+    /// </summary>
+    public bool EnableLegacyRelationshipInference { get; set; }
+    
+    /// <summary>
     /// Creates extraction options from command options.
     /// </summary>
     public static SchemaExtractionOptions FromCommandOptions(CommandOptions options) => new()
@@ -45,6 +56,8 @@ public class SchemaExtractionOptions
         EnableDataSampling = options.UseDataSampling,
         IncludeViews = options.IncludeViews,
         IncludeStoredProcedures = options.IncludeProcs,
-        IncludeUserDefinedFunctions = options.IncludeUdfs
+        IncludeUserDefinedFunctions = options.IncludeUdfs,
+        IncludeRelationships = options.IncludeRelationships,
+        EnableLegacyRelationshipInference = options.UseLegacyInference
     };
 }

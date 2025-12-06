@@ -94,11 +94,20 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
             schema.Tables.Add(tableInfo);
         }
         
-        // Get relationships
-        schema.Relationships = await GetRelationshipsAsync(connection, schemaName);
-        
-        // Populate table-level relationships (common logic)
-        PopulateTableRelationships(schema);
+        // Get relationships if enabled
+        if (options.IncludeRelationships)
+        {
+            schema.Relationships = await GetRelationshipsAsync(connection, schemaName);
+            
+            // If no FK relationships found and legacy inference is enabled, infer from naming patterns
+            if (schema.Relationships.Count == 0 && options.EnableLegacyRelationshipInference)
+            {
+                schema.Relationships = InferRelationshipsFromNaming(schema.Tables);
+            }
+            
+            // Populate table-level relationships (common logic)
+            PopulateTableRelationships(schema);
+        }
         
         // Get scalar functions if enabled
         if (options.IncludeUserDefinedFunctions)
@@ -113,6 +122,114 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
         }
         
         return schema;
+    }
+
+    /// <summary>
+    /// Infers relationships from column and table naming patterns (legacy mode).
+    /// Detects patterns like: table_id, tableId, table_fk, id_table
+    /// </summary>
+    private static List<RelationshipInfo> InferRelationshipsFromNaming(List<TableInfo> tables)
+    {
+        var relationships = new List<RelationshipInfo>();
+        var tableNames = tables.Select(t => t.Name.ToLowerInvariant()).ToHashSet();
+        var tablesByName = tables.ToDictionary(t => t.Name.ToLowerInvariant(), t => t);
+        
+        foreach (var table in tables)
+        {
+            foreach (var column in table.Columns)
+            {
+                var colName = column.Column.ToLowerInvariant();
+                
+                // Skip primary key columns
+                if (colName == "id" || colName == $"{table.Name.ToLowerInvariant()}_id")
+                    continue;
+                
+                // Pattern 1: column ends with _id (e.g., user_id, customer_id)
+                if (colName.EndsWith("_id"))
+                {
+                    var potentialTable = colName[..^3]; // Remove _id
+                    if (TryFindReferencedTable(potentialTable, tablesByName, out var referencedTable))
+                    {
+                        relationships.Add(CreateInferredRelationship(table, column, referencedTable!));
+                    }
+                }
+                // Pattern 2: column ends with Id (camelCase, e.g., userId, customerId)
+                else if (colName.EndsWith("id") && colName.Length > 2)
+                {
+                    var potentialTable = colName[..^2]; // Remove Id
+                    if (TryFindReferencedTable(potentialTable, tablesByName, out var referencedTable))
+                    {
+                        relationships.Add(CreateInferredRelationship(table, column, referencedTable!));
+                    }
+                }
+                // Pattern 3: column ends with _fk (e.g., user_fk)
+                else if (colName.EndsWith("_fk"))
+                {
+                    var potentialTable = colName[..^3]; // Remove _fk
+                    if (TryFindReferencedTable(potentialTable, tablesByName, out var referencedTable))
+                    {
+                        relationships.Add(CreateInferredRelationship(table, column, referencedTable!));
+                    }
+                }
+                // Pattern 4: column starts with fk_ (e.g., fk_user)
+                else if (colName.StartsWith("fk_"))
+                {
+                    var potentialTable = colName[3..]; // Remove fk_
+                    if (TryFindReferencedTable(potentialTable, tablesByName, out var referencedTable))
+                    {
+                        relationships.Add(CreateInferredRelationship(table, column, referencedTable!));
+                    }
+                }
+            }
+        }
+        
+        return relationships;
+    }
+    
+    private static bool TryFindReferencedTable(string potentialName, Dictionary<string, TableInfo> tablesByName, out TableInfo? table)
+    {
+        table = null;
+        var normalizedName = potentialName.ToLowerInvariant();
+        
+        // Direct match
+        if (tablesByName.TryGetValue(normalizedName, out table))
+            return true;
+        
+        // Try plural form (simple: add 's')
+        if (tablesByName.TryGetValue(normalizedName + "s", out table))
+            return true;
+        
+        // Try singular form (simple: remove 's')
+        if (normalizedName.EndsWith("s") && tablesByName.TryGetValue(normalizedName[..^1], out table))
+            return true;
+        
+        // Try with underscores replaced (user_account -> useraccount)
+        var withoutUnderscores = normalizedName.Replace("_", "");
+        if (tablesByName.TryGetValue(withoutUnderscores, out table))
+            return true;
+        
+        return false;
+    }
+    
+    private static RelationshipInfo CreateInferredRelationship(TableInfo fromTable, ColumnInfo column, TableInfo toTable)
+    {
+        // Find the primary key column in the referenced table
+        var pkColumn = toTable.Columns.FirstOrDefault(c => 
+            c.Column.Equals("id", StringComparison.OrdinalIgnoreCase) ||
+            c.Column.Equals($"{toTable.Name}_id", StringComparison.OrdinalIgnoreCase));
+        
+        var pkName = pkColumn?.Column ?? "id";
+        
+        return new RelationshipInfo
+        {
+            Name = $"inferred_fk_{fromTable.Name}_{column.Column}",
+            SchemaFrom = fromTable.Schema,
+            SchemaTo = toTable.Schema,
+            TableFrom = fromTable.Name,
+            TableTo = toTable.Name,
+            Key = pkName,
+            Foreign = column.Column
+        };
     }
 
     public async Task<bool> TestConnectionAsync(string connectionString)

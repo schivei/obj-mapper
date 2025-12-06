@@ -124,6 +124,16 @@ When using a connection string, the schema is extracted directly from the databa
 - `--no-udfs`: Disable user-defined function mapping
   - Scalar functions will not be extracted from the database
 
+- `--no-rel`: Disable relationship mapping
+  - Foreign key relationships will not be extracted
+  - Cannot be used together with `--legacy`
+
+- `--legacy`: Enable legacy relationship inference
+  - Infers relationships from column/table naming patterns when no foreign keys exist
+  - Detects patterns: `user_id` → `users` table, `fk_customer` → `customer` table
+  - Supports singular/plural table name matching
+  - Cannot be used together with `--no-rel`
+
 ## Configuration
 
 The tool supports configuration files at two levels:

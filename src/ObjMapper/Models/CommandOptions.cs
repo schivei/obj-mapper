@@ -48,6 +48,19 @@ public class CommandOptions
     public bool NoUdfs { get; set; }
     
     /// <summary>
+    /// Whether to disable relationship mapping entirely.
+    /// Cannot be used together with --legacy.
+    /// </summary>
+    public bool NoRel { get; set; }
+    
+    /// <summary>
+    /// Whether to enable legacy relationship inference.
+    /// Infers relationships based on column/table naming patterns when no foreign keys exist.
+    /// Cannot be used together with --no-rel.
+    /// </summary>
+    public bool Legacy { get; set; }
+    
+    /// <summary>
     /// Whether type inference is enabled (inverse of NoInference).
     /// </summary>
     public bool UseTypeInference => !NoInference;
@@ -71,6 +84,16 @@ public class CommandOptions
     /// Whether user-defined function mapping is enabled (inverse of NoUdfs).
     /// </summary>
     public bool IncludeUdfs => !NoUdfs;
+    
+    /// <summary>
+    /// Whether relationship mapping is enabled (inverse of NoRel).
+    /// </summary>
+    public bool IncludeRelationships => !NoRel;
+    
+    /// <summary>
+    /// Whether legacy relationship inference is enabled.
+    /// </summary>
+    public bool UseLegacyInference => Legacy && !NoRel;
     
     /// <summary>
     /// Whether to use connection string mode instead of CSV files.

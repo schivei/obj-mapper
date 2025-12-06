@@ -10,21 +10,23 @@ namespace ObjMapper.Parsers;
 /// </summary>
 public class CsvSchemaParser
 {
+    private static CsvConfiguration CreateCsvConfiguration() => new(CultureInfo.InvariantCulture)
+    {
+        HeaderValidated = null,
+        MissingFieldFound = null,
+        PrepareHeaderForMatch = args => args.Header.ToLowerInvariant()
+    };
+
     /// <summary>
     /// Parses the schema CSV file and returns a list of columns.
     /// </summary>
     public List<ColumnInfo> ParseSchemaFile(string filePath)
     {
         using var reader = new StreamReader(filePath);
-        using var csv = new CsvReader(reader, new CsvConfiguration(CultureInfo.InvariantCulture)
-        {
-            HeaderValidated = null,
-            MissingFieldFound = null,
-            PrepareHeaderForMatch = args => args.Header.ToLowerInvariant()
-        });
+        using var csv = new CsvReader(reader, CreateCsvConfiguration());
         
         csv.Context.RegisterClassMap<ColumnInfoMap>();
-        return csv.GetRecords<ColumnInfo>().ToList();
+        return [.. csv.GetRecords<ColumnInfo>()];
     }
 
     /// <summary>
@@ -33,15 +35,10 @@ public class CsvSchemaParser
     public List<RelationshipInfo> ParseRelationshipsFile(string filePath)
     {
         using var reader = new StreamReader(filePath);
-        using var csv = new CsvReader(reader, new CsvConfiguration(CultureInfo.InvariantCulture)
-        {
-            HeaderValidated = null,
-            MissingFieldFound = null,
-            PrepareHeaderForMatch = args => args.Header.ToLowerInvariant()
-        });
+        using var csv = new CsvReader(reader, CreateCsvConfiguration());
         
         csv.Context.RegisterClassMap<RelationshipInfoMap>();
-        return csv.GetRecords<RelationshipInfo>().ToList();
+        return [.. csv.GetRecords<RelationshipInfo>()];
     }
 
     /// <summary>
@@ -50,15 +47,10 @@ public class CsvSchemaParser
     public List<IndexInfo> ParseIndexesFile(string filePath)
     {
         using var reader = new StreamReader(filePath);
-        using var csv = new CsvReader(reader, new CsvConfiguration(CultureInfo.InvariantCulture)
-        {
-            HeaderValidated = null,
-            MissingFieldFound = null,
-            PrepareHeaderForMatch = args => args.Header.ToLowerInvariant()
-        });
+        using var csv = new CsvReader(reader, CreateCsvConfiguration());
         
         csv.Context.RegisterClassMap<IndexInfoMap>();
-        return csv.GetRecords<IndexInfo>().ToList();
+        return [.. csv.GetRecords<IndexInfo>()];
     }
 
     /// <summary>
@@ -81,36 +73,29 @@ public class CsvSchemaParser
             {
                 Schema = group.Key.Schema,
                 Name = group.Key.Table,
-                Columns = group.ToList()
+                Columns = [.. group]
             };
 
-            if (relationships != null)
+            var fullTableName = string.IsNullOrEmpty(table.Schema) 
+                ? table.Name 
+                : $"{table.Schema}.{table.Name}";
+
+            if (relationships is not null)
             {
-                var fullTableName = string.IsNullOrEmpty(table.Schema) 
-                    ? table.Name 
-                    : $"{table.Schema}.{table.Name}";
-
-                table.OutgoingRelationships = relationships
+                table.OutgoingRelationships = [.. relationships
                     .Where(r => r.FullTableFrom.Equals(fullTableName, StringComparison.OrdinalIgnoreCase) ||
-                               r.TableFrom.Equals(table.Name, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
+                               r.TableFrom.Equals(table.Name, StringComparison.OrdinalIgnoreCase))];
 
-                table.IncomingRelationships = relationships
+                table.IncomingRelationships = [.. relationships
                     .Where(r => r.FullTableTo.Equals(fullTableName, StringComparison.OrdinalIgnoreCase) ||
-                               r.TableTo.Equals(table.Name, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
+                               r.TableTo.Equals(table.Name, StringComparison.OrdinalIgnoreCase))];
             }
 
-            if (indexes != null)
+            if (indexes is not null)
             {
-                var fullTableName = string.IsNullOrEmpty(table.Schema) 
-                    ? table.Name 
-                    : $"{table.Schema}.{table.Name}";
-
-                table.Indexes = indexes
+                table.Indexes = [.. indexes
                     .Where(i => i.FullTableName.Equals(fullTableName, StringComparison.OrdinalIgnoreCase) ||
-                               i.Table.Equals(table.Name, StringComparison.OrdinalIgnoreCase))
-                    .ToList();
+                               i.Table.Equals(table.Name, StringComparison.OrdinalIgnoreCase))];
             }
 
             schema.Tables.Add(table);

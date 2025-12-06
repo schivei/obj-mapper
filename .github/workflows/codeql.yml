@@ -1,0 +1,62 @@
+# CodeQL Advanced Security Analysis
+# Runs static analysis on C# code to find security vulnerabilities
+name: "CodeQL"
+
+on:
+  push:
+    branches: [ "main" ]
+    paths:
+      - '**.cs'
+      - '**.csproj'
+      - '.github/workflows/codeql.yml'
+  pull_request:
+    branches: [ "main" ]
+    paths:
+      - '**.cs'
+      - '**.csproj'
+      - '.github/workflows/codeql.yml'
+  schedule:
+    # Run weekly on Sunday at 23:42 UTC
+    - cron: '42 23 * * 0'
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze C#
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      security-events: write
+      packages: read
+      actions: read
+      contents: read
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '10.0.x'
+
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: csharp
+        # Use security-extended for more comprehensive scanning
+        queries: security-extended
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Build
+      run: dotnet build --no-restore --configuration Release
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:csharp"

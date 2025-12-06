@@ -7,20 +7,16 @@ namespace ObjMapper.Generators;
 /// <summary>
 /// Generates Dapper-compatible entities and repository context.
 /// </summary>
-public class DapperGenerator : ICodeGenerator
+/// <param name="databaseType">The database type for type mapping and connection creation.</param>
+/// <param name="namespaceName">The namespace for generated classes.</param>
+/// <param name="useTypeInference">Whether to use ML-based type inference.</param>
+public class DapperGenerator(DatabaseType databaseType, string namespaceName = "Generated", bool useTypeInference = false) : ICodeGenerator
 {
-    private readonly TypeMapper _typeMapper;
-    private readonly string _namespace;
-    private readonly DatabaseType _databaseType;
+    private readonly TypeMapper _typeMapper = new(databaseType) { UseTypeInference = useTypeInference };
+    private readonly string _namespace = namespaceName;
+    private readonly DatabaseType _databaseType = databaseType;
 
     public EntityTypeMode EntityTypeMode { get; set; } = EntityTypeMode.Class;
-
-    public DapperGenerator(DatabaseType databaseType, string namespaceName = "Generated")
-    {
-        _typeMapper = new TypeMapper(databaseType);
-        _namespace = namespaceName;
-        _databaseType = databaseType;
-    }
 
     public Dictionary<string, string> GenerateEntities(DatabaseSchema schema)
     {
@@ -124,6 +120,306 @@ public class DapperGenerator : ICodeGenerator
         sb.AppendLine("    partial void OnConnectionCreatedPartial(IDbConnection connection);");
         sb.AppendLine("}");
 
+        return sb.ToString();
+    }
+
+    public Dictionary<string, string> GenerateScalarFunctions(DatabaseSchema schema)
+    {
+        var functions = new Dictionary<string, string>();
+        
+        if (schema.ScalarFunctions.Count == 0)
+            return functions;
+        
+        var code = GenerateDbFunctionsClass(schema);
+        functions["DbFunctions.cs"] = code;
+        
+        return functions;
+    }
+
+    public Dictionary<string, string> GenerateStoredProcedures(DatabaseSchema schema)
+    {
+        var procedures = new Dictionary<string, string>();
+        
+        if (schema.StoredProcedures.Count == 0)
+            return procedures;
+        
+        // Generate result types for tabular procedures
+        var resultTypes = GenerateStoredProcedureResultTypes(schema);
+        if (!string.IsNullOrEmpty(resultTypes))
+        {
+            procedures["StoredProcedureResultTypes.cs"] = resultTypes;
+        }
+        
+        // Generate stored procedures wrapper
+        var code = GenerateStoredProceduresClass(schema);
+        procedures["StoredProcedures.cs"] = code;
+        
+        return procedures;
+    }
+    
+    private string GenerateStoredProceduresClass(DatabaseSchema schema)
+    {
+        var sb = new StringBuilder();
+        
+        sb.AppendLine("using System.Data;");
+        sb.AppendLine("using Dapper;");
+        sb.AppendLine();
+        sb.AppendLine($"namespace {_namespace};");
+        sb.AppendLine();
+        sb.AppendLine("/// <summary>");
+        sb.AppendLine("/// Extension methods for executing stored procedures with Dapper.");
+        sb.AppendLine("/// </summary>");
+        sb.AppendLine("public static partial class StoredProcedureExtensions");
+        sb.AppendLine("{");
+        
+        foreach (var proc in schema.StoredProcedures)
+        {
+            GenerateStoredProcedureMethod(sb, proc);
+        }
+        
+        sb.AppendLine("}");
+        
+        return sb.ToString();
+    }
+    
+    private void GenerateStoredProcedureMethod(StringBuilder sb, StoredProcedureInfo proc)
+    {
+        var methodName = NamingHelper.ToPascalCase(proc.Name);
+        var asyncMethodName = $"{methodName}Async";
+        
+        // Generate XML comment
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine($"    /// Executes stored procedure {proc.FullName}.");
+        sb.AppendLine("    /// </summary>");
+        
+        // Build parameters
+        var inputParams = proc.Parameters.Where(p => !p.IsOutput).OrderBy(p => p.OrdinalPosition).ToList();
+        var outputParams = proc.Parameters.Where(p => p.IsOutput).OrderBy(p => p.OrdinalPosition).ToList();
+        
+        var methodParams = new List<string> { "this IDbConnection connection" };
+        methodParams.AddRange(inputParams.Select(p => 
+            $"{_typeMapper.MapToCSharpType(p.DataType, true)} {NamingHelper.ToCamelCase(p.Name)}"));
+        
+        var methodParamList = string.Join(", ", methodParams);
+        
+        switch (proc.OutputType)
+        {
+            case StoredProcedureOutputType.None:
+                GenerateVoidProcedure(sb, proc, methodName, asyncMethodName, methodParamList, inputParams);
+                break;
+            case StoredProcedureOutputType.Scalar:
+                GenerateScalarProcedure(sb, proc, methodName, asyncMethodName, methodParamList, inputParams, outputParams);
+                break;
+            case StoredProcedureOutputType.Tabular:
+                GenerateTabularProcedure(sb, proc, methodName, asyncMethodName, methodParamList, inputParams);
+                break;
+        }
+    }
+    
+    private void GenerateVoidProcedure(StringBuilder sb, StoredProcedureInfo proc, string methodName, 
+        string asyncMethodName, string methodParamList, List<StoredProcedureParameter> inputParams)
+    {
+        // Build parameters object
+        var paramObject = BuildDynamicParametersObject(inputParams);
+        
+        // Sync method
+        sb.AppendLine($"    public static void {methodName}({methodParamList})");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        connection.Execute(\"{proc.FullName}\", {paramObject}, commandType: CommandType.StoredProcedure);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        
+        // Async method
+        sb.AppendLine($"    public static async Task {asyncMethodName}({methodParamList})");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        await connection.ExecuteAsync(\"{proc.FullName}\", {paramObject}, commandType: CommandType.StoredProcedure);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+    
+    private void GenerateScalarProcedure(StringBuilder sb, StoredProcedureInfo proc, string methodName, 
+        string asyncMethodName, string methodParamList, List<StoredProcedureParameter> inputParams,
+        List<StoredProcedureParameter> outputParams)
+    {
+        var outputParam = outputParams.FirstOrDefault();
+        var returnType = outputParam != null 
+            ? _typeMapper.MapToCSharpType(outputParam.DataType, true) 
+            : "object?";
+        
+        var paramObject = BuildDynamicParametersObject(inputParams);
+        
+        // Sync method
+        sb.AppendLine($"    public static {returnType} {methodName}({methodParamList})");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        return connection.ExecuteScalar<{returnType}>(\"{proc.FullName}\", {paramObject}, commandType: CommandType.StoredProcedure);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        
+        // Async method
+        sb.AppendLine($"    public static async Task<{returnType}> {asyncMethodName}({methodParamList})");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        return await connection.ExecuteScalarAsync<{returnType}>(\"{proc.FullName}\", {paramObject}, commandType: CommandType.StoredProcedure);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+    
+    private void GenerateTabularProcedure(StringBuilder sb, StoredProcedureInfo proc, string methodName, 
+        string asyncMethodName, string methodParamList, List<StoredProcedureParameter> inputParams)
+    {
+        var resultTypeName = $"{NamingHelper.ToPascalCase(proc.Name)}Result";
+        var paramObject = BuildDynamicParametersObject(inputParams);
+        
+        // Sync method
+        sb.AppendLine($"    public static IEnumerable<{resultTypeName}> {methodName}({methodParamList})");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        return connection.Query<{resultTypeName}>(\"{proc.FullName}\", {paramObject}, commandType: CommandType.StoredProcedure);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+        
+        // Async method
+        sb.AppendLine($"    public static async Task<IEnumerable<{resultTypeName}>> {asyncMethodName}({methodParamList})");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        return await connection.QueryAsync<{resultTypeName}>(\"{proc.FullName}\", {paramObject}, commandType: CommandType.StoredProcedure);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+    
+    private static string BuildDynamicParametersObject(List<StoredProcedureParameter> inputParams)
+    {
+        if (inputParams.Count == 0)
+            return "null";
+        
+        var paramProps = string.Join(", ", inputParams.Select(p => NamingHelper.ToCamelCase(p.Name)));
+        return $"new {{ {paramProps} }}";
+    }
+    
+    private string GenerateStoredProcedureResultTypes(DatabaseSchema schema)
+    {
+        var tabularProcs = schema.StoredProcedures
+            .Where(p => p.OutputType == StoredProcedureOutputType.Tabular && p.ResultColumns.Count > 0)
+            .ToList();
+            
+        if (tabularProcs.Count == 0)
+            return string.Empty;
+        
+        var sb = new StringBuilder();
+        
+        sb.AppendLine($"namespace {_namespace};");
+        sb.AppendLine();
+        
+        foreach (var proc in tabularProcs)
+        {
+            var typeName = $"{NamingHelper.ToPascalCase(proc.Name)}Result";
+            
+            sb.AppendLine($"/// <summary>");
+            sb.AppendLine($"/// Result type for stored procedure {proc.FullName}.");
+            sb.AppendLine($"/// </summary>");
+            sb.AppendLine($"public class {typeName}");
+            sb.AppendLine("{");
+            
+            foreach (var col in proc.ResultColumns.OrderBy(c => c.OrdinalPosition))
+            {
+                var propName = NamingHelper.ToPascalCase(col.Name);
+                var propType = _typeMapper.MapToCSharpType(col.DataType, col.IsNullable);
+                
+                sb.AppendLine($"    public {propType} {propName} {{ get; set; }}");
+            }
+            
+            sb.AppendLine("}");
+            sb.AppendLine();
+        }
+        
+        return sb.ToString();
+    }
+    
+    private string GenerateDbFunctionsClass(DatabaseSchema schema)
+    {
+        var sb = new StringBuilder();
+        
+        sb.AppendLine("using System.Data;");
+        sb.AppendLine("using Dapper;");
+        sb.AppendLine();
+        sb.AppendLine($"namespace {_namespace};");
+        sb.AppendLine();
+        sb.AppendLine("/// <summary>");
+        sb.AppendLine("/// Database scalar function wrappers for Dapper.");
+        sb.AppendLine("/// </summary>");
+        sb.AppendLine("public static partial class DbFunctions");
+        sb.AppendLine("{");
+        
+        foreach (var func in schema.ScalarFunctions)
+        {
+            var methodName = NamingHelper.ToPascalCase(func.Name);
+            var returnType = _typeMapper.MapToCSharpType(func.ReturnType, true);
+            
+            // Generate XML comment
+            sb.AppendLine("    /// <summary>");
+            sb.AppendLine($"    /// Calls database function {func.FullName}.");
+            sb.AppendLine("    /// </summary>");
+            
+            // Generate method signature
+            var parameters = func.Parameters
+                .OrderBy(p => p.OrdinalPosition)
+                .Select(p => new {
+                    Name = NamingHelper.ToCamelCase(p.Name),
+                    Type = _typeMapper.MapToCSharpType(p.DataType, true)
+                })
+                .ToList();
+            
+            var parameterDeclarations = string.Join(", ", 
+                new[] { "IDbConnection connection" }
+                    .Concat(parameters.Select(p => $"{p.Type} {p.Name}")));
+            
+            sb.AppendLine($"    public static {returnType} {methodName}({parameterDeclarations})");
+            sb.AppendLine("    {");
+            
+            // Build the SQL call
+            var fullFunctionName = !string.IsNullOrEmpty(func.Schema) 
+                ? $"{func.Schema}.{func.Name}" 
+                : func.Name;
+            
+            var paramPlaceholders = string.Join(", ", 
+                parameters.Select(p => $"@{p.Name}"));
+            
+            var sql = $"SELECT {fullFunctionName}({paramPlaceholders})";
+            
+            if (parameters.Count > 0)
+            {
+                var paramObject = "new { " + string.Join(", ", parameters.Select(p => p.Name)) + " }";
+                sb.AppendLine($"        return connection.ExecuteScalar<{returnType}>(\"{sql}\", {paramObject});");
+            }
+            else
+            {
+                sb.AppendLine($"        return connection.ExecuteScalar<{returnType}>(\"{sql}\");");
+            }
+            
+            sb.AppendLine("    }");
+            sb.AppendLine();
+            
+            // Generate async version
+            sb.AppendLine("    /// <summary>");
+            sb.AppendLine($"    /// Calls database function {func.FullName} asynchronously.");
+            sb.AppendLine("    /// </summary>");
+            
+            sb.AppendLine($"    public static async Task<{returnType}> {methodName}Async({parameterDeclarations})");
+            sb.AppendLine("    {");
+            
+            if (parameters.Count > 0)
+            {
+                var paramObject = "new { " + string.Join(", ", parameters.Select(p => p.Name)) + " }";
+                sb.AppendLine($"        return await connection.ExecuteScalarAsync<{returnType}>(\"{sql}\", {paramObject});");
+            }
+            else
+            {
+                sb.AppendLine($"        return await connection.ExecuteScalarAsync<{returnType}>(\"{sql}\");");
+            }
+            
+            sb.AppendLine("    }");
+            sb.AppendLine();
+        }
+        
+        sb.AppendLine("}");
+        
         return sb.ToString();
     }
 
@@ -256,7 +552,7 @@ public class DapperGenerator : ICodeGenerator
         foreach (var column in table.Columns)
         {
             var propertyName = columnToProperty[column.Column];
-            var csharpType = _typeMapper.MapToCSharpType(column.Type, column.Nullable);
+            var csharpType = _typeMapper.MapColumnToCSharpType(column);
 
             // Detect primary key
             var isPrimaryKey = column.Column.Equals("id", StringComparison.OrdinalIgnoreCase) ||

@@ -19,8 +19,9 @@ We take security seriously. If you discover a security vulnerability, please fol
 
 ### Do
 
-1. **Email the maintainers directly** at [security@example.com] or use GitHub's private vulnerability reporting feature
-2. Include:
+1. **Use GitHub's private vulnerability reporting feature** at the Security tab of this repository
+2. Or **create a private issue** with the `security` label
+3. Include:
    - Description of the vulnerability
    - Steps to reproduce
    - Potential impact

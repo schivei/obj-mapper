@@ -345,11 +345,11 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         sb.AppendLine();
     }
     
-    private static void GenerateExecuteSql(StringBuilder sb, StoredProcedureInfo proc, 
+    private void GenerateExecuteSql(StringBuilder sb, StoredProcedureInfo proc, 
         List<StoredProcedureParameter> inputParams, string executeMethod, bool isAsync = false)
     {
         var paramNames = inputParams.Select(p => $"@{p.Name}").ToList();
-        var sql = $"EXEC {proc.FullName} {string.Join(", ", paramNames)}";
+        var sql = GetStoredProcedureCallSyntax(proc.FullName, paramNames);
         
         sb.AppendLine($"        var sql = \"{sql}\";");
         
@@ -373,6 +373,19 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
             var asyncSuffix = isAsync ? ", cancellationToken" : "";
             sb.AppendLine($"        {awaitPrefix}context.Database.{executeMethod}(sql{asyncSuffix});");
         }
+    }
+
+    private string GetStoredProcedureCallSyntax(string fullName, List<string> paramNames)
+    {
+        var paramList = string.Join(", ", paramNames);
+        
+        return _databaseType switch
+        {
+            DatabaseType.MySql => $"CALL {fullName}({paramList})",
+            DatabaseType.PostgreSql => $"CALL {fullName}({paramList})",
+            DatabaseType.Oracle => $"BEGIN {fullName}({paramList}); END;",
+            _ => $"EXEC {fullName} {paramList}" // SQL Server, SQLite
+        };
     }
     
     private void GenerateScalarExecute(StringBuilder sb, StoredProcedureInfo proc,
@@ -457,7 +470,7 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         List<StoredProcedureParameter> inputParams, string resultTypeName)
     {
         var paramNames = inputParams.Select(p => $"@{p.Name}").ToList();
-        var sql = $"EXEC {proc.FullName} {string.Join(", ", paramNames)}";
+        var sql = GetStoredProcedureCallSyntax(proc.FullName, paramNames);
         
         sb.AppendLine($"        var sql = \"{sql}\";");
         
@@ -483,7 +496,7 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         List<StoredProcedureParameter> inputParams, string resultTypeName)
     {
         var paramNames = inputParams.Select(p => $"@{p.Name}").ToList();
-        var sql = $"EXEC {proc.FullName} {string.Join(", ", paramNames)}";
+        var sql = GetStoredProcedureCallSyntax(proc.FullName, paramNames);
         
         sb.AppendLine($"        var sql = \"{sql}\";");
         

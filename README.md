@@ -293,7 +293,7 @@ The tool recognizes common column naming patterns:
 
 ### Boolean Column Detection (Connection String Mode)
 
-When using `--cs`, the tool queries small integer columns (tinyint, smallint, bit) to check if they only contain NULL, 0, or 1 values. If so, they are mapped to `bool`.
+When using `--connection-string` (or `--cs`), the tool queries small integer columns (tinyint, smallint, bit) to check if they only contain NULL, 0, or 1 values. If so, they are mapped to `bool`.
 
 ```sql
 -- Example: Column "is_active TINYINT" with values {0, 1} → bool
@@ -302,7 +302,7 @@ When using `--cs`, the tool queries small integer columns (tinyint, smallint, bi
 
 ### GUID Column Detection (Connection String Mode)
 
-When using `--cs`, varchar(36) and char(36) columns are analyzed for valid GUID values:
+When using `--connection-string` (or `--cs`), varchar(36) and char(36) columns are analyzed for valid GUID values:
 - Requires at least 10 valid GUID values
 - Must not contain any blank or whitespace-only values
 - If conditions are met, the column is mapped to `Guid`

@@ -247,8 +247,6 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
                columnName == "guid" ||
                columnName.EndsWith("_uuid") ||
                columnName.EndsWith("_guid") ||
-               columnName.EndsWith("uuid") ||
-               columnName.EndsWith("guid") ||
                columnName == "correlation_id" ||
                columnName == "tracking_id" ||
                columnName == "external_id" ||

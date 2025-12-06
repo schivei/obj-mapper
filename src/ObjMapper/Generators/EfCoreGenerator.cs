@@ -14,6 +14,7 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
 {
     private readonly TypeMapper _typeMapper = new(databaseType) { UseTypeInference = useTypeInference };
     private readonly string _namespace = namespaceName;
+    private readonly DatabaseType _databaseType = databaseType;
 
     public EntityTypeMode EntityTypeMode { get; set; } = EntityTypeMode.Class;
 
@@ -187,8 +188,9 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         var sb = new StringBuilder();
         
         sb.AppendLine("using Microsoft.EntityFrameworkCore;");
-        sb.AppendLine("using Microsoft.Data.SqlClient;");
+        sb.AppendLine(GetDbClientUsing());
         sb.AppendLine("using System.Data;");
+        sb.AppendLine("using System.Data.Common;");
         sb.AppendLine();
         sb.AppendLine($"namespace {_namespace};");
         sb.AppendLine();
@@ -198,6 +200,9 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         sb.AppendLine("public static partial class StoredProcedureExtensions");
         sb.AppendLine("{");
         
+        // Add helper method for creating parameters
+        GenerateCreateParameterHelper(sb);
+        
         foreach (var proc in schema.StoredProcedures)
         {
             GenerateStoredProcedureMethod(sb, proc);
@@ -206,6 +211,42 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         sb.AppendLine("}");
         
         return sb.ToString();
+    }
+
+    private void GenerateCreateParameterHelper(StringBuilder sb)
+    {
+        var dbParamType = GetDbParameterType();
+        sb.AppendLine($"    private static {dbParamType} CreateParameter(string name, object? value)");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        return new {dbParamType}(name, value ?? DBNull.Value);");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+    }
+
+    private string GetDbClientUsing()
+    {
+        return _databaseType switch
+        {
+            DatabaseType.MySql => "using MySqlConnector;",
+            DatabaseType.PostgreSql => "using Npgsql;",
+            DatabaseType.SqlServer => "using Microsoft.Data.SqlClient;",
+            DatabaseType.Oracle => "using Oracle.ManagedDataAccess.Client;",
+            DatabaseType.Sqlite => "using Microsoft.Data.Sqlite;",
+            _ => "using Microsoft.Data.SqlClient;"
+        };
+    }
+
+    private string GetDbParameterType()
+    {
+        return _databaseType switch
+        {
+            DatabaseType.MySql => "MySqlParameter",
+            DatabaseType.PostgreSql => "NpgsqlParameter",
+            DatabaseType.SqlServer => "SqlParameter",
+            DatabaseType.Oracle => "OracleParameter",
+            DatabaseType.Sqlite => "SqliteParameter",
+            _ => "SqlParameter"
+        };
     }
     
     private void GenerateStoredProcedureMethod(StringBuilder sb, StoredProcedureInfo proc)
@@ -319,7 +360,7 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
             foreach (var param in inputParams)
             {
                 var camelName = NamingHelper.ToCamelCase(param.Name);
-                sb.AppendLine($"            new SqlParameter(\"@{param.Name}\", {camelName} ?? (object)DBNull.Value),");
+                sb.AppendLine($"            CreateParameter(\"@{param.Name}\", {camelName}),");
             }
             sb.AppendLine("        };");
             var awaitPrefix = isAsync ? "await " : "";
@@ -334,9 +375,11 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         }
     }
     
-    private static void GenerateScalarExecute(StringBuilder sb, StoredProcedureInfo proc,
+    private void GenerateScalarExecute(StringBuilder sb, StoredProcedureInfo proc,
         List<StoredProcedureParameter> inputParams, StoredProcedureParameter? outputParam, string returnType)
     {
+        var dbParamType = GetDbParameterType();
+        
         sb.AppendLine("        using var connection = context.Database.GetDbConnection();");
         sb.AppendLine("        using var command = connection.CreateCommand();");
         sb.AppendLine($"        command.CommandText = \"{proc.FullName}\";");
@@ -346,12 +389,12 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         foreach (var param in inputParams)
         {
             var camelName = NamingHelper.ToCamelCase(param.Name);
-            sb.AppendLine($"        command.Parameters.Add(new SqlParameter(\"@{param.Name}\", {camelName} ?? (object)DBNull.Value));");
+            sb.AppendLine($"        command.Parameters.Add(CreateParameter(\"@{param.Name}\", {camelName}));");
         }
         
         if (outputParam != null)
         {
-            sb.AppendLine($"        var outputParameter = new SqlParameter(\"@{outputParam.Name}\", SqlDbType.VarChar, -1);");
+            sb.AppendLine($"        var outputParameter = new {dbParamType}(\"@{outputParam.Name}\", DBNull.Value);");
             sb.AppendLine("        outputParameter.Direction = ParameterDirection.Output;");
             sb.AppendLine("        command.Parameters.Add(outputParameter);");
         }
@@ -371,9 +414,11 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         }
     }
     
-    private static void GenerateScalarExecuteAsync(StringBuilder sb, StoredProcedureInfo proc,
+    private void GenerateScalarExecuteAsync(StringBuilder sb, StoredProcedureInfo proc,
         List<StoredProcedureParameter> inputParams, StoredProcedureParameter? outputParam, string returnType)
     {
+        var dbParamType = GetDbParameterType();
+        
         sb.AppendLine("        await using var connection = context.Database.GetDbConnection();");
         sb.AppendLine("        await using var command = connection.CreateCommand();");
         sb.AppendLine($"        command.CommandText = \"{proc.FullName}\";");
@@ -383,12 +428,12 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         foreach (var param in inputParams)
         {
             var camelName = NamingHelper.ToCamelCase(param.Name);
-            sb.AppendLine($"        command.Parameters.Add(new SqlParameter(\"@{param.Name}\", {camelName} ?? (object)DBNull.Value));");
+            sb.AppendLine($"        command.Parameters.Add(CreateParameter(\"@{param.Name}\", {camelName}));");
         }
         
         if (outputParam != null)
         {
-            sb.AppendLine($"        var outputParameter = new SqlParameter(\"@{outputParam.Name}\", SqlDbType.VarChar, -1);");
+            sb.AppendLine($"        var outputParameter = new {dbParamType}(\"@{outputParam.Name}\", DBNull.Value);");
             sb.AppendLine("        outputParameter.Direction = ParameterDirection.Output;");
             sb.AppendLine("        command.Parameters.Add(outputParameter);");
         }
@@ -423,7 +468,7 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
             foreach (var param in inputParams)
             {
                 var camelName = NamingHelper.ToCamelCase(param.Name);
-                sb.AppendLine($"            new SqlParameter(\"@{param.Name}\", {camelName} ?? (object)DBNull.Value),");
+                sb.AppendLine($"            CreateParameter(\"@{param.Name}\", {camelName}),");
             }
             sb.AppendLine("        };");
             sb.AppendLine($"        return context.Set<{resultTypeName}>().FromSqlRaw(sql, parameters).ToList();");
@@ -449,7 +494,7 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
             foreach (var param in inputParams)
             {
                 var camelName = NamingHelper.ToCamelCase(param.Name);
-                sb.AppendLine($"            new SqlParameter(\"@{param.Name}\", {camelName} ?? (object)DBNull.Value),");
+                sb.AppendLine($"            CreateParameter(\"@{param.Name}\", {camelName}),");
             }
             sb.AppendLine("        };");
             sb.AppendLine($"        return await context.Set<{resultTypeName}>().FromSqlRaw(sql, parameters).ToListAsync(cancellationToken);");

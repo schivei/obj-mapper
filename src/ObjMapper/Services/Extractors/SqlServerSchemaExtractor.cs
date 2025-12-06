@@ -322,7 +322,7 @@ public class SqlServerSchemaExtractor : BaseSchemaExtractor
         {
             var paramName = reader.GetString(0);
             if (paramName.StartsWith('@'))
-                paramName = paramName[1..];
+                paramName = paramName.TrimStart('@');
                 
             parameters.Add(new StoredProcedureParameter
             {
@@ -351,37 +351,77 @@ public class SqlServerSchemaExtractor : BaseSchemaExtractor
         AddParameter(command, "@schema", schemaName);
         AddParameter(command, "@procedure", procedureName);
         
-        var outputParamCount = Convert.ToInt32(await command.ExecuteScalarAsync());
+        var result = await command.ExecuteScalarAsync();
+        var outputParamCount = result != null ? (int)result : 0;
         if (outputParamCount > 0)
         {
             return StoredProcedureOutputType.Scalar;
         }
         
         // Check procedure definition for SELECT statements (tabular output)
-        await using var defCommand = connection.CreateCommand();
-        defCommand.CommandText = @"
-            SELECT m.definition
-            FROM sys.sql_modules m
-            JOIN sys.procedures p ON m.object_id = p.object_id
-            WHERE SCHEMA_NAME(p.schema_id) = @schema 
-              AND p.name = @procedure";
-        AddParameter(defCommand, "@schema", schemaName);
-        AddParameter(defCommand, "@procedure", procedureName);
-        
-        var definition = await defCommand.ExecuteScalarAsync() as string;
-        if (!string.IsNullOrEmpty(definition))
+        // Use sys.dm_exec_describe_first_result_set_for_object for more accurate detection
+        try
         {
-            // Simple heuristic: check if procedure contains SELECT that's not inside INSERT
-            var upperDef = definition.ToUpperInvariant();
-            var hasSelect = upperDef.Contains("SELECT") && !upperDef.Contains("SELECT INTO") && 
-                           !upperDef.Contains("INSERT INTO");
-            if (hasSelect)
+            await using var resultCommand = connection.CreateCommand();
+            resultCommand.CommandText = @"
+                SELECT TOP 1 column_ordinal
+                FROM sys.dm_exec_describe_first_result_set_for_object(
+                    OBJECT_ID(@fullName), NULL)
+                WHERE name IS NOT NULL";
+            AddParameter(resultCommand, "@fullName", $"{schemaName}.{procedureName}");
+            
+            var hasResult = await resultCommand.ExecuteScalarAsync();
+            if (hasResult != null)
             {
                 return StoredProcedureOutputType.Tabular;
             }
         }
+        catch (Microsoft.Data.SqlClient.SqlException)
+        {
+            // Some procedures can't be analyzed (dynamic SQL, temp tables, etc.)
+            // Fall back to heuristic approach
+            await using var defCommand = connection.CreateCommand();
+            defCommand.CommandText = @"
+                SELECT m.definition
+                FROM sys.sql_modules m
+                JOIN sys.procedures p ON m.object_id = p.object_id
+                WHERE SCHEMA_NAME(p.schema_id) = @schema 
+                  AND p.name = @procedure";
+            AddParameter(defCommand, "@schema", schemaName);
+            AddParameter(defCommand, "@procedure", procedureName);
+            
+            var definition = await defCommand.ExecuteScalarAsync() as string;
+            if (!string.IsNullOrEmpty(definition))
+            {
+                // Remove comments and string literals before checking for SELECT
+                var cleanedDef = RemoveCommentsAndStrings(definition);
+                var upperDef = cleanedDef.ToUpperInvariant();
+                
+                // Check for SELECT at statement level (not inside INSERT, INTO, or subqueries for assignments)
+                var hasTabularSelect = System.Text.RegularExpressions.Regex.IsMatch(
+                    upperDef, 
+                    @"^\s*SELECT\s+(?!.*\s+INTO\s+)", 
+                    System.Text.RegularExpressions.RegexOptions.Multiline);
+                    
+                if (hasTabularSelect && !upperDef.Contains("INSERT INTO") && !upperDef.Contains("SELECT INTO"))
+                {
+                    return StoredProcedureOutputType.Tabular;
+                }
+            }
+        }
         
         return StoredProcedureOutputType.None;
+    }
+
+    private static string RemoveCommentsAndStrings(string sql)
+    {
+        // Remove single-line comments
+        sql = System.Text.RegularExpressions.Regex.Replace(sql, @"--[^\r\n]*", "");
+        // Remove multi-line comments
+        sql = System.Text.RegularExpressions.Regex.Replace(sql, @"/\*[\s\S]*?\*/", "");
+        // Remove string literals (simplified - doesn't handle escaped quotes perfectly)
+        sql = System.Text.RegularExpressions.Regex.Replace(sql, @"'[^']*'", "''");
+        return sql;
     }
 
     private async Task<List<StoredProcedureColumn>> GetProcedureResultColumnsAsync(DbConnection connection, string schemaName, string procedureName)
@@ -416,10 +456,10 @@ public class SqlServerSchemaExtractor : BaseSchemaExtractor
                 });
             }
         }
-        catch
+        catch (Microsoft.Data.SqlClient.SqlException)
         {
-            // Some procedures may not be analyzable (dynamic SQL, etc.)
-            // Return empty list in such cases
+            // Some procedures may not be analyzable (dynamic SQL, temp tables, etc.)
+            // Return empty list in such cases - this is expected behavior
         }
         
         return columns;

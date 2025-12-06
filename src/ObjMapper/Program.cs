@@ -1,22 +1,37 @@
 using System.CommandLine;
+using System.Diagnostics.CodeAnalysis;
 using ObjMapper.Generators;
 using ObjMapper.Models;
 using ObjMapper.Parsers;
 using ObjMapper.Services;
+using ObjMapper.Services.ConsoleOutput;
 
-// Ensure global config exists
-ConfigurationService.EnsureGlobalConfigExists();
+namespace ObjMapper;
 
-// Load effective configuration
-var config = ConfigurationService.LoadEffectiveConfig();
+/// <summary>
+/// Main program entry point for ObjMapper.
+/// </summary>
+[ExcludeFromCodeCoverage]
+public static class Program
+{
+    /// <summary>
+    /// Entry point for the ObjMapper tool.
+    /// </summary>
+    public static async Task<int> Main(string[] args)
+    {
+        // Ensure global config exists
+        ConfigurationService.EnsureGlobalConfigExists();
 
-// Create root command
-var rootCommand = new RootCommand("Database reverse engineering dotnet tool - generates entity mappings from CSV schema files or database connections");
+        // Load effective configuration
+        var config = ConfigurationService.LoadEffectiveConfig();
 
-// ============================================
-// Config subcommand
-// ============================================
-var configCommand = new Command("config", "Manage omap configuration");
+        // Create root command
+        var rootCommand = new RootCommand("Database reverse engineering dotnet tool - generates entity mappings from CSV schema files or database connections");
+
+        // ============================================
+        // Config subcommand
+        // ============================================
+        var configCommand = new Command("config", "Manage omap configuration");
 
 // Config set command
 var configSetCommand = new Command("set", "Set a configuration value");
@@ -240,12 +255,49 @@ var noPluralizeOption = new Option<bool>("--no-pluralize")
     DefaultValueFactory = _ => config.NoPluralizer
 };
 
+var noInferenceOption = new Option<bool>("--no-inference")
+{
+    Description = "Disable type inference for column type mapping. Type inference is enabled by default and analyzes column names, comments, and data to determine best C# types (e.g., char(36) -> Guid, tinyint with 0/1 values -> bool)."
+};
+
+var noChecksOption = new Option<bool>("--no-checks")
+{
+    Description = "Disable data sampling queries for type verification. When set, type inference uses only column metadata (name, type, comment) which is much faster but may be less accurate for edge cases."
+};
+
+var noViewsOption = new Option<bool>("--no-views")
+{
+    Description = "Disable view mapping. Views will not be extracted from the database."
+};
+
+var noProcsOption = new Option<bool>("--no-procs")
+{
+    Description = "Disable stored procedure mapping. Stored procedures will not be extracted from the database."
+};
+
+var noUdfsOption = new Option<bool>("--no-udfs")
+{
+    Description = "Disable user-defined function mapping. Scalar functions will not be extracted from the database."
+};
+
+var noRelOption = new Option<bool>("--no-rel")
+{
+    Description = "Disable relationship mapping. Foreign key relationships will not be extracted. Cannot be used with --legacy."
+};
+
+var legacyOption = new Option<bool>("--legacy")
+{
+    Description = "Enable legacy relationship inference. Infers relationships from column/table naming patterns when no foreign keys exist. Cannot be used with --no-rel."
+};
+
 // Add validation for required inputs
 rootCommand.Validators.Add(result =>
 {
     var csvFile = result.GetValue(schemaFileArg);
     var connString = result.GetValue(connectionStringOption);
     var dbType = result.GetValue(databaseTypeOption);
+    var noRel = result.GetValue(noRelOption);
+    var legacy = result.GetValue(legacyOption);
     
     // Must have either CSV file or connection string
     if (csvFile == null && string.IsNullOrEmpty(connString))
@@ -258,6 +310,12 @@ rootCommand.Validators.Add(result =>
     if (csvFile != null && string.IsNullOrEmpty(connString) && string.IsNullOrEmpty(dbType))
     {
         result.AddError("Database type (-d/--database) is required when using CSV files.");
+    }
+    
+    // --no-rel and --legacy are mutually exclusive
+    if (noRel && legacy)
+    {
+        result.AddError("Options --no-rel and --legacy cannot be used together.");
     }
 });
 
@@ -275,6 +333,13 @@ rootCommand.Options.Add(contextNameOption);
 rootCommand.Options.Add(entityModeOption);
 rootCommand.Options.Add(localeOption);
 rootCommand.Options.Add(noPluralizeOption);
+rootCommand.Options.Add(noInferenceOption);
+rootCommand.Options.Add(noChecksOption);
+rootCommand.Options.Add(noViewsOption);
+rootCommand.Options.Add(noProcsOption);
+rootCommand.Options.Add(noUdfsOption);
+rootCommand.Options.Add(noRelOption);
+rootCommand.Options.Add(legacyOption);
 
 // Set handler
 rootCommand.SetAction(async (parseResult, cancellationToken) =>
@@ -293,204 +358,395 @@ rootCommand.SetAction(async (parseResult, cancellationToken) =>
         ContextName = parseResult.GetValue(contextNameOption)!,
         EntityMode = parseResult.GetValue(entityModeOption)!,
         Locale = parseResult.GetValue(localeOption)!,
-        NoPluralizer = parseResult.GetValue(noPluralizeOption)
+        NoPluralizer = parseResult.GetValue(noPluralizeOption),
+        NoInference = parseResult.GetValue(noInferenceOption),
+        NoChecks = parseResult.GetValue(noChecksOption),
+        NoViews = parseResult.GetValue(noViewsOption),
+        NoProcs = parseResult.GetValue(noProcsOption),
+        NoUdfs = parseResult.GetValue(noUdfsOption),
+        NoRel = parseResult.GetValue(noRelOption),
+        Legacy = parseResult.GetValue(legacyOption)
     };
 
-    await ExecuteAsync(options);
-});
+        await ExecuteAsync(options);
+    });
 
-return await rootCommand.Parse(args).InvokeAsync();
+    return await rootCommand.Parse(args).InvokeAsync();
+}
 
-static async Task ExecuteAsync(CommandOptions options)
+    private static async Task ExecuteAsync(CommandOptions options)
 {
-    Console.WriteLine("ObjMapper - Database Reverse Engineering Tool");
-    Console.WriteLine("=============================================");
-    Console.WriteLine();
-
-    // Configure NamingHelper with locale settings
-    NamingHelper.Configure(options.Locale, options.NoPluralizer);
-
-    DatabaseType dbType;
-    DatabaseSchema schema;
-
-    if (options.UseConnectionString)
+    using var console = new ConsoleOutputService();
+    var result = new ExecutionResult();
+    
+    try
     {
-        // Connection string mode - extract schema from database
-        Console.WriteLine("Mode: Database Connection");
-        Console.WriteLine($"Connection: {MaskConnectionString(options.ConnectionString!)}");
+        console.WriteHeader();
         
-        // Try to auto-detect database type if not specified
-        if (string.IsNullOrEmpty(options.DatabaseType))
+        // Configure NamingHelper with locale settings
+        NamingHelper.Configure(options.Locale, options.NoPluralizer);
+
+        DatabaseType dbType;
+        DatabaseSchema schema;
+
+        if (options.UseConnectionString)
         {
-            var detected = SchemaExtractorFactory.DetectDatabaseType(options.ConnectionString!);
-            if (detected == null)
+            // Connection string mode - extract schema from database
+            console.WriteSection("Database Connection Mode");
+            
+            var configDict = new Dictionary<string, string>
             {
-                Console.Error.WriteLine("Error: Could not auto-detect database type. Please specify -d/--database option.");
+                ["Connection"] = MaskConnectionString(options.ConnectionString!),
+                ["Schema Filter"] = options.SchemaFilter ?? "(default)",
+                ["Type Inference"] = options.UseTypeInference ? "Enabled" : "Disabled"
+            };
+            
+            // Try to auto-detect database type if not specified
+            if (string.IsNullOrEmpty(options.DatabaseType))
+            {
+                var detected = SchemaExtractorFactory.DetectDatabaseType(options.ConnectionString!);
+                if (detected == null)
+                {
+                    result.SetCriticalError("Could not auto-detect database type. Please specify -d/--database option.");
+                    console.WriteError(result.Errors[^1]);
+                    console.WriteSummary(false);
+                    return;
+                }
+                dbType = detected.Value;
+                configDict["Database Type"] = $"{dbType} (auto-detected)";
+            }
+            else
+            {
+                dbType = ParseDatabaseType(options.DatabaseType);
+                configDict["Database Type"] = dbType.ToString();
+            }
+            
+            console.WriteConfiguration(configDict);
+            
+            // Extract schema from database
+            try
+            {
+                var extractor = SchemaExtractorFactory.Create(dbType);
+                
+                var connected = await console.WithSpinnerAsync("Testing database connection...", async () =>
+                {
+                    return await extractor.TestConnectionAsync(options.ConnectionString!);
+                });
+                
+                if (!connected)
+                {
+                    result.SetCriticalError("Could not connect to database. Please check your connection string.");
+                    console.WriteError(result.Errors[^1]);
+                    console.WriteSummary(false);
+                    return;
+                }
+                console.WriteSuccess("Database connection successful!");
+                
+                var extractionOptions = SchemaExtractionOptions.FromCommandOptions(options);
+                
+                schema = await console.WithSpinnerAsync("Extracting schema from database...", async () =>
+                {
+                    return await extractor.ExtractSchemaAsync(options.ConnectionString!, extractionOptions);
+                });
+                
+                var totalIndexes = schema.Tables.Sum(t => t.Indexes.Count);
+                var stats = new Dictionary<string, int>
+                {
+                    ["Tables"] = schema.Tables.Count,
+                    ["Relationships"] = schema.Relationships.Count,
+                    ["Indexes"] = totalIndexes,
+                    ["Scalar Functions"] = schema.ScalarFunctions.Count,
+                    ["Stored Procedures"] = schema.StoredProcedures.Count
+                };
+                
+                if (options.UseTypeInference)
+                {
+                    var inferredBooleans = schema.Tables.Sum(t => t.Columns.Count(c => c.InferredAsBoolean));
+                    var inferredGuids = schema.Tables.Sum(t => t.Columns.Count(c => c.InferredAsGuid));
+                    if (inferredBooleans > 0) stats["Inferred Booleans"] = inferredBooleans;
+                    if (inferredGuids > 0) stats["Inferred GUIDs"] = inferredGuids;
+                }
+                
+                console.WriteSection("Schema Statistics");
+                console.WriteStatistics(stats);
+            }
+            catch (NotSupportedException ex)
+            {
+                result.SetCriticalError(ex.Message);
+                console.WriteError(ex.Message);
+                console.WriteSummary(false);
                 return;
             }
-            dbType = detected.Value;
-            Console.WriteLine($"Auto-detected database type: {dbType}");
+            catch (Exception ex)
+            {
+                result.SetCriticalError($"Error extracting schema: {ex.Message}");
+                console.WriteError($"Error extracting schema: {ex.Message}");
+                console.WriteSummary(false);
+                return;
+            }
         }
         else
         {
-            dbType = ParseDatabaseType(options.DatabaseType);
-        }
-        
-        Console.WriteLine($"Schema filter: {options.SchemaFilter ?? "(default)"}");
-        Console.WriteLine();
-        
-        // Extract schema from database
-        try
-        {
-            var extractor = SchemaExtractorFactory.Create(dbType);
+            // CSV mode - parse schema from files
+            console.WriteSection("CSV Files Mode");
             
-            Console.WriteLine("Testing database connection...");
-            if (!await extractor.TestConnectionAsync(options.ConnectionString!))
+            // Validate input files
+            if (options.SchemaFile == null || !options.SchemaFile.Exists)
             {
-                Console.Error.WriteLine("Error: Could not connect to database. Please check your connection string.");
+                result.SetCriticalError($"Schema file not found: {options.SchemaFile?.FullName ?? "(not specified)"}");
+                console.WriteError(result.Errors[^1]);
+                console.WriteSummary(false);
                 return;
             }
-            Console.WriteLine("Connection successful!");
-            Console.WriteLine();
+
+            if (options.RelationshipsFile != null && !options.RelationshipsFile.Exists)
+            {
+                result.SetCriticalError($"Relationships file not found: {options.RelationshipsFile.FullName}");
+                console.WriteError(result.Errors[^1]);
+                console.WriteSummary(false);
+                return;
+            }
+
+            if (options.IndexesFile != null && !options.IndexesFile.Exists)
+            {
+                result.SetCriticalError($"Indexes file not found: {options.IndexesFile.FullName}");
+                console.WriteError(result.Errors[^1]);
+                console.WriteSummary(false);
+                return;
+            }
+
+            dbType = ParseDatabaseType(options.DatabaseType!);
+
+            var configDict = new Dictionary<string, string>
+            {
+                ["Schema File"] = options.SchemaFile.FullName,
+                ["Relationships File"] = options.RelationshipsFile?.FullName ?? "None",
+                ["Indexes File"] = options.IndexesFile?.FullName ?? "None",
+                ["Database Type"] = dbType.ToString()
+            };
+            console.WriteConfiguration(configDict);
+
+            // Parse CSV files
+            var parser = new CsvSchemaParser();
             
-            Console.WriteLine("Extracting schema from database...");
-            schema = await extractor.ExtractSchemaAsync(options.ConnectionString!, options.SchemaFilter);
-            Console.WriteLine($"Found {schema.Tables.Count} tables.");
-            Console.WriteLine($"Found {schema.Relationships.Count} relationships.");
-            var totalIndexes = schema.Tables.Sum(t => t.Indexes.Count);
-            Console.WriteLine($"Found {totalIndexes} indexes.");
+            var columns = await console.WithSpinnerAsync("Parsing schema file...", () =>
+            {
+                return Task.FromResult(parser.ParseSchemaFile(options.SchemaFile.FullName));
+            });
+            console.WriteInfo($"Found {columns.Count} columns");
+
+            List<RelationshipInfo>? relationships = null;
+            if (options.RelationshipsFile != null)
+            {
+                relationships = await console.WithSpinnerAsync("Parsing relationships file...", () =>
+                {
+                    return Task.FromResult(parser.ParseRelationshipsFile(options.RelationshipsFile.FullName));
+                });
+                console.WriteInfo($"Found {relationships.Count} relationships");
+            }
+
+            List<IndexInfo>? indexes = null;
+            if (options.IndexesFile != null)
+            {
+                indexes = await console.WithSpinnerAsync("Parsing indexes file...", () =>
+                {
+                    return Task.FromResult(parser.ParseIndexesFile(options.IndexesFile.FullName));
+                });
+                console.WriteInfo($"Found {indexes.Count} indexes");
+            }
+
+            // Build schema
+            schema = parser.BuildSchema(columns, relationships, indexes);
+            
+            var stats = new Dictionary<string, int>
+            {
+                ["Tables"] = schema.Tables.Count,
+                ["Columns"] = columns.Count,
+                ["Relationships"] = relationships?.Count ?? 0,
+                ["Indexes"] = indexes?.Count ?? 0
+            };
+            
+            console.WriteSection("Schema Statistics");
+            console.WriteStatistics(stats);
         }
-        catch (NotSupportedException ex)
+
+        var mapType = ParseMappingType(options.MappingType);
+        var entType = ParseEntityTypeMode(options.EntityMode);
+
+        console.WriteSection("Generation Settings");
+        var genConfigDict = new Dictionary<string, string>
         {
-            Console.Error.WriteLine($"Error: {ex.Message}");
-            return;
+            ["Mapping Type"] = mapType.ToString(),
+            ["Database Type"] = dbType.ToString(),
+            ["Entity Mode"] = entType.ToString(),
+            ["Locale"] = options.Locale,
+            ["Pluralization"] = options.NoPluralizer ? "Disabled" : "Enabled",
+            ["Output Directory"] = options.OutputDir.FullName,
+            ["Namespace"] = options.Namespace,
+            ["Context Name"] = options.ContextName
+        };
+        console.WriteConfiguration(genConfigDict);
+
+        // Create generator
+        ICodeGenerator generator = mapType switch
+        {
+            MappingType.EfCore => new EfCoreGenerator(dbType, options.Namespace, options.UseTypeInference) { EntityTypeMode = entType },
+            MappingType.Dapper => new DapperGenerator(dbType, options.Namespace, options.UseTypeInference) { EntityTypeMode = entType },
+            _ => throw new InvalidOperationException($"Unknown mapping type: {mapType}")
+        };
+
+        // Define output directories (will be created only when writing files)
+        var entitiesDir = Path.Combine(options.OutputDir.FullName, "Entities");
+        var configurationsDir = Path.Combine(options.OutputDir.FullName, "Configurations");
+
+        console.WriteSection("Generating Code");
+
+        // Generate all code in memory first
+        Dictionary<string, string> entities;
+        Dictionary<string, string> configurations;
+        Dictionary<string, string> scalarFunctions;
+        Dictionary<string, string> storedProceduresDict;
+        string dbContextContent;
+        
+        try
+        {
+            entities = generator.GenerateEntities(schema);
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Error extracting schema: {ex.Message}");
-            return;
+            result.AddError($"Error generating entities: {ex.Message}");
+            console.WriteWarning($"Error generating entities: {ex.Message}");
+            entities = [];
         }
-    }
-    else
-    {
-        // CSV mode - parse schema from files
-        Console.WriteLine("Mode: CSV Files");
         
-        // Validate input files
-        if (options.SchemaFile == null || !options.SchemaFile.Exists)
+        try
         {
-            Console.Error.WriteLine($"Error: Schema file not found: {options.SchemaFile?.FullName ?? "(not specified)"}");
-            return;
+            configurations = generator.GenerateConfigurations(schema);
         }
-
-        if (options.RelationshipsFile != null && !options.RelationshipsFile.Exists)
+        catch (Exception ex)
         {
-            Console.Error.WriteLine($"Error: Relationships file not found: {options.RelationshipsFile.FullName}");
-            return;
+            result.AddError($"Error generating configurations: {ex.Message}");
+            console.WriteWarning($"Error generating configurations: {ex.Message}");
+            configurations = [];
         }
-
-        if (options.IndexesFile != null && !options.IndexesFile.Exists)
-        {
-            Console.Error.WriteLine($"Error: Indexes file not found: {options.IndexesFile.FullName}");
-            return;
-        }
-
-        dbType = ParseDatabaseType(options.DatabaseType!);
-
-        Console.WriteLine($"Schema file: {options.SchemaFile.FullName}");
-        Console.WriteLine($"Relationships file: {options.RelationshipsFile?.FullName ?? "None"}");
-        Console.WriteLine($"Indexes file: {options.IndexesFile?.FullName ?? "None"}");
-        Console.WriteLine();
-
-        // Parse CSV files
-        var parser = new CsvSchemaParser();
         
-        Console.WriteLine("Parsing schema file...");
-        var columns = parser.ParseSchemaFile(options.SchemaFile.FullName);
-        Console.WriteLine($"Found {columns.Count} columns.");
-
-        List<RelationshipInfo>? relationships = null;
-        if (options.RelationshipsFile != null)
+        try
         {
-            Console.WriteLine("Parsing relationships file...");
-            relationships = parser.ParseRelationshipsFile(options.RelationshipsFile.FullName);
-            Console.WriteLine($"Found {relationships.Count} relationships.");
+            scalarFunctions = generator.GenerateScalarFunctions(schema);
+        }
+        catch (Exception ex)
+        {
+            result.AddError($"Error generating scalar functions: {ex.Message}");
+            console.WriteWarning($"Error generating scalar functions: {ex.Message}");
+            scalarFunctions = [];
+        }
+        
+        try
+        {
+            storedProceduresDict = generator.GenerateStoredProcedures(schema);
+        }
+        catch (Exception ex)
+        {
+            result.AddError($"Error generating stored procedures: {ex.Message}");
+            console.WriteWarning($"Error generating stored procedures: {ex.Message}");
+            storedProceduresDict = [];
+        }
+        
+        try
+        {
+            dbContextContent = generator.GenerateDbContext(schema, options.ContextName);
+        }
+        catch (Exception ex)
+        {
+            result.SetCriticalError($"Error generating DbContext: {ex.Message}");
+            console.WriteError($"Error generating DbContext: {ex.Message}");
+            console.WriteSummary(false);
+            return;
         }
 
-        List<IndexInfo>? indexes = null;
-        if (options.IndexesFile != null)
+        // Add all generated files to result
+        foreach (var (fileName, content) in entities)
         {
-            Console.WriteLine("Parsing indexes file...");
-            indexes = parser.ParseIndexesFile(options.IndexesFile.FullName);
-            Console.WriteLine($"Found {indexes.Count} indexes.");
+            result.AddGeneratedFile(Path.Combine(entitiesDir, fileName), content);
+        }
+        
+        foreach (var (fileName, content) in configurations)
+        {
+            result.AddGeneratedFile(Path.Combine(configurationsDir, fileName), content);
+        }
+        
+        result.AddGeneratedFile(Path.Combine(options.OutputDir.FullName, $"{options.ContextName}.cs"), dbContextContent);
+        
+        foreach (var (fileName, content) in scalarFunctions)
+        {
+            result.AddGeneratedFile(Path.Combine(options.OutputDir.FullName, fileName), content);
+        }
+        
+        foreach (var (fileName, content) in storedProceduresDict)
+        {
+            result.AddGeneratedFile(Path.Combine(options.OutputDir.FullName, fileName), content);
         }
 
-        // Build schema
-        schema = parser.BuildSchema(columns, relationships, indexes);
-        Console.WriteLine($"Found {schema.Tables.Count} tables.");
+        // Write files to disk only if no critical errors
+        if (result.CanWriteFiles)
+        {
+            var totalFiles = result.FilesCount;
+            var currentStep = 0;
+            
+            await console.WithProgressAsync("Writing files...", totalFiles, async (updateProgress) =>
+            {
+                foreach (var (filePath, content) in result.GeneratedFiles)
+                {
+                    currentStep++;
+                    var fileName = Path.GetFileName(filePath);
+                    updateProgress(currentStep, $"Writing: {fileName}");
+                    
+                    var directory = Path.GetDirectoryName(filePath);
+                    if (!string.IsNullOrEmpty(directory))
+                    {
+                        Directory.CreateDirectory(directory);
+                    }
+                    await File.WriteAllTextAsync(filePath, content);
+                }
+            });
+            
+            // Show warnings if any
+            if (result.HasWarnings)
+            {
+                console.WriteSection("Warnings");
+                foreach (var warning in result.Warnings)
+                {
+                    console.WriteWarning(warning);
+                }
+            }
+            
+            // Show non-critical errors if any
+            if (result.HasErrors)
+            {
+                console.WriteSection("Errors (non-critical)");
+                foreach (var error in result.Errors)
+                {
+                    console.WriteWarning(error);
+                }
+            }
+            
+            console.WriteSummary(true, result.FilesCount);
+        }
+        else
+        {
+            console.WriteError("Critical error occurred. No files were written to disk.");
+            console.WriteSummary(false);
+        }
     }
-
-    var mapType = ParseMappingType(options.MappingType);
-    var entType = ParseEntityTypeMode(options.EntityMode);
-
-    Console.WriteLine();
-    Console.WriteLine($"Mapping type: {mapType}");
-    Console.WriteLine($"Database type: {dbType}");
-    Console.WriteLine($"Entity mode: {entType}");
-    Console.WriteLine($"Locale: {options.Locale}");
-    Console.WriteLine($"Pluralization: {(options.NoPluralizer ? "Disabled" : "Enabled")}");
-    Console.WriteLine($"Output directory: {options.OutputDir.FullName}");
-    Console.WriteLine($"Namespace: {options.Namespace}");
-    Console.WriteLine($"Context name: {options.ContextName}");
-    Console.WriteLine();
-
-    // Create generator
-    ICodeGenerator generator = mapType switch
+    catch (Exception ex)
     {
-        MappingType.EfCore => new EfCoreGenerator(dbType, options.Namespace) { EntityTypeMode = entType },
-        MappingType.Dapper => new DapperGenerator(dbType, options.Namespace) { EntityTypeMode = entType },
-        _ => throw new InvalidOperationException($"Unknown mapping type: {mapType}")
-    };
-
-    // Create output directories
-    var entitiesDir = Path.Combine(options.OutputDir.FullName, "Entities");
-    var configurationsDir = Path.Combine(options.OutputDir.FullName, "Configurations");
-    
-    Directory.CreateDirectory(entitiesDir);
-    Directory.CreateDirectory(configurationsDir);
-
-    // Generate entities
-    Console.WriteLine("Generating entities...");
-    var entities = generator.GenerateEntities(schema);
-    foreach (var (fileName, content) in entities)
-    {
-        var filePath = Path.Combine(entitiesDir, fileName);
-        await File.WriteAllTextAsync(filePath, content);
-        Console.WriteLine($"  Created: {filePath}");
+        result.SetCriticalError($"Unexpected error: {ex.Message}");
+        console.WriteError($"Unexpected error: {ex.Message}");
+        console.WriteSummary(false);
     }
-
-    // Generate configurations
-    Console.WriteLine("Generating configurations...");
-    var configurations = generator.GenerateConfigurations(schema);
-    foreach (var (fileName, content) in configurations)
-    {
-        var filePath = Path.Combine(configurationsDir, fileName);
-        await File.WriteAllTextAsync(filePath, content);
-        Console.WriteLine($"  Created: {filePath}");
-    }
-
-    // Generate DbContext
-    Console.WriteLine("Generating database context...");
-    var dbContextContent = generator.GenerateDbContext(schema, options.ContextName);
-    var dbContextPath = Path.Combine(options.OutputDir.FullName, $"{options.ContextName}.cs");
-    await File.WriteAllTextAsync(dbContextPath, dbContextContent);
-    Console.WriteLine($"  Created: {dbContextPath}");
-
-    Console.WriteLine();
-    Console.WriteLine("Generation completed successfully!");
 }
 
-static string MaskConnectionString(string connectionString)
+    private static string MaskConnectionString(string connectionString)
 {
     // Mask password in connection string for display
     var patterns = new[]
@@ -510,7 +766,7 @@ static string MaskConnectionString(string connectionString)
     return result;
 }
 
-static DatabaseType ParseDatabaseType(string dbType)
+    private static DatabaseType ParseDatabaseType(string dbType)
 {
     return dbType.ToLowerInvariant() switch
     {
@@ -523,7 +779,7 @@ static DatabaseType ParseDatabaseType(string dbType)
     };
 }
 
-static MappingType ParseMappingType(string mapType)
+    private static MappingType ParseMappingType(string mapType)
 {
     return mapType.ToLowerInvariant() switch
     {
@@ -533,7 +789,7 @@ static MappingType ParseMappingType(string mapType)
     };
 }
 
-static EntityTypeMode ParseEntityTypeMode(string entityMode)
+    private static EntityTypeMode ParseEntityTypeMode(string entityMode)
 {
     return entityMode.ToLowerInvariant() switch
     {
@@ -543,4 +799,5 @@ static EntityTypeMode ParseEntityTypeMode(string entityMode)
         "record_struct" or "rtr" => EntityTypeMode.RecordStruct,
         _ => EntityTypeMode.Class
     };
+}
 }

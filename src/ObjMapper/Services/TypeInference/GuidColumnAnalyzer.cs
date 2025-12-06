@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Text.RegularExpressions;
 using ObjMapper.Models;
 
 namespace ObjMapper.Services.TypeInference;
@@ -6,29 +7,24 @@ namespace ObjMapper.Services.TypeInference;
 /// <summary>
 /// Analyzes column data to determine if string columns could be GUIDs.
 /// </summary>
-public static class GuidColumnAnalyzer
+public static partial class GuidColumnAnalyzer
 {
     private const int MinValidGuidRecords = 10;
     
     /// <summary>
-    /// String types that could potentially be GUIDs (36 characters).
+    /// Regex pattern to match exactly 36 character string types.
+    /// Matches: char(36), nchar(36), varchar(36), nvarchar(36), character(36), character varying(36)
     /// </summary>
-    private static readonly HashSet<string> PotentialGuidTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "char(36)", "varchar(36)", "nchar(36)", "nvarchar(36)", "character(36)"
-    };
+    [GeneratedRegex(@"^n?(var)?char\s*\(\s*36\s*\)$|^character(\s+varying)?\s*\(\s*36\s*\)$", RegexOptions.IgnoreCase)]
+    private static partial Regex GuidTypePattern();
     
     /// <summary>
     /// Checks if a column type could potentially be a GUID based on type definition.
     /// </summary>
     public static bool IsPotentialGuidType(string dbType)
     {
-        var normalizedType = dbType.Trim().ToLowerInvariant();
-        return PotentialGuidTypes.Contains(normalizedType) || 
-               normalizedType == "char(36)" ||
-               normalizedType.StartsWith("varchar(36)") ||
-               normalizedType.StartsWith("nvarchar(36)") ||
-               normalizedType.StartsWith("character varying(36)");
+        var normalizedType = dbType.Trim();
+        return GuidTypePattern().IsMatch(normalizedType);
     }
     
     /// <summary>

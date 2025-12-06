@@ -1,6 +1,7 @@
 using System.Data.Common;
 using MySqlConnector;
 using ObjMapper.Models;
+using ObjMapper.Services.TypeInference;
 
 namespace ObjMapper.Services.Extractors;
 
@@ -44,6 +45,7 @@ public class MySqlSchemaExtractor : BaseSchemaExtractor
             if (enableTypeInference)
             {
                 await AnalyzeBooleanColumnsInternalAsync(connection, tableInfo);
+                await AnalyzeGuidColumnsInternalAsync(connection, tableInfo);
             }
             
             tableInfo.Indexes = await GetIndexesInternalAsync(connection, databaseName, tableName);
@@ -71,31 +73,39 @@ public class MySqlSchemaExtractor : BaseSchemaExtractor
             }
         }
     }
-
-    protected override Task<List<(string name, string schema)>> GetTablesAsync(DbConnection connection, string schemaName)
+    
+    private async Task AnalyzeGuidColumnsInternalAsync(MySqlConnection connection, TableInfo tableInfo)
     {
-        throw new NotSupportedException("Use ExtractSchemaAsync directly for MySQL");
+        var guidAnalysis = await GuidColumnAnalyzer.AnalyzeColumnsAsync(
+            connection, tableInfo.Schema, tableInfo.Name, tableInfo.Columns, DatabaseType);
+        
+        foreach (var column in tableInfo.Columns)
+        {
+            if (guidAnalysis.TryGetValue(column.Column, out var couldBeGuid) && couldBeGuid)
+            {
+                column.InferredAsGuid = true;
+            }
+        }
     }
 
-    protected override Task<List<ColumnInfo>> GetColumnsAsync(DbConnection connection, string schemaName, string tableName)
+    protected override async Task<List<(string name, string schema)>> GetTablesAsync(DbConnection connection, string schemaName)
     {
-        throw new NotSupportedException("Use ExtractSchemaAsync directly for MySQL");
+        var mysqlConn = (MySqlConnection)connection;
+        var tables = await GetTablesInternalAsync(mysqlConn, schemaName);
+        return tables.Select(t => (t, schemaName)).ToList();
     }
 
-    protected override Task<List<IndexInfo>> GetIndexesAsync(DbConnection connection, string schemaName, string tableName)
-    {
-        throw new NotSupportedException("Use ExtractSchemaAsync directly for MySQL");
-    }
+    protected override Task<List<ColumnInfo>> GetColumnsAsync(DbConnection connection, string schemaName, string tableName) =>
+        GetColumnsInternalAsync((MySqlConnection)connection, schemaName, tableName);
 
-    protected override Task<List<RelationshipInfo>> GetRelationshipsAsync(DbConnection connection, string schemaName)
-    {
-        throw new NotSupportedException("Use ExtractSchemaAsync directly for MySQL");
-    }
+    protected override Task<List<IndexInfo>> GetIndexesAsync(DbConnection connection, string schemaName, string tableName) =>
+        GetIndexesInternalAsync((MySqlConnection)connection, schemaName, tableName);
 
-    protected override Task<List<ScalarFunctionInfo>> GetScalarFunctionsAsync(DbConnection connection, string schemaName)
-    {
-        throw new NotSupportedException("Use ExtractSchemaAsync directly for MySQL");
-    }
+    protected override Task<List<RelationshipInfo>> GetRelationshipsAsync(DbConnection connection, string schemaName) =>
+        GetRelationshipsInternalAsync((MySqlConnection)connection, schemaName);
+
+    protected override Task<List<ScalarFunctionInfo>> GetScalarFunctionsAsync(DbConnection connection, string schemaName) =>
+        GetScalarFunctionsInternalAsync((MySqlConnection)connection, schemaName);
 
     private static async Task<List<string>> GetTablesInternalAsync(MySqlConnection connection, string databaseName)
     {

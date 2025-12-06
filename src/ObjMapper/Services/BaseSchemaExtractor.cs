@@ -45,10 +45,11 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
             // Get columns
             tableInfo.Columns = await GetColumnsAsync(connection, tableSchema, tableName);
             
-            // Analyze columns for potential boolean types if type inference is enabled
+            // Analyze columns for potential boolean and GUID types if type inference is enabled
             if (enableTypeInference)
             {
                 await AnalyzeBooleanColumnsAsync(connection, tableInfo);
+                await AnalyzeGuidColumnsAsync(connection, tableInfo);
             }
             
             // Get indexes
@@ -126,6 +127,23 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
             if (booleanAnalysis.TryGetValue(column.Column, out var couldBeBoolean) && couldBeBoolean)
             {
                 column.InferredAsBoolean = true;
+            }
+        }
+    }
+    
+    /// <summary>
+    /// Analyzes columns for potential GUID types based on data values.
+    /// </summary>
+    private async Task AnalyzeGuidColumnsAsync(DbConnection connection, TableInfo tableInfo)
+    {
+        var guidAnalysis = await GuidColumnAnalyzer.AnalyzeColumnsAsync(
+            connection, tableInfo.Schema, tableInfo.Name, tableInfo.Columns, DatabaseType);
+        
+        foreach (var column in tableInfo.Columns)
+        {
+            if (guidAnalysis.TryGetValue(column.Column, out var couldBeGuid) && couldBeGuid)
+            {
+                column.InferredAsGuid = true;
             }
         }
     }

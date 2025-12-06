@@ -16,21 +16,28 @@ public class MySqlSchemaExtractor : BaseSchemaExtractor
     protected override DbConnection CreateConnection(string connectionString) => 
         new MySqlConnection(connectionString);
 
-    public override async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, string? schemaFilter, bool enableTypeInference)
+    public override async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, SchemaExtractionOptions options)
     {
         // For MySQL, get the database name from connection if no filter provided
         await using var connection = (MySqlConnection)CreateConnection(connectionString);
         await connection.OpenAsync();
         
-        var databaseName = schemaFilter ?? connection.Database;
-        return await ExtractSchemaWithDatabaseAsync(connection, databaseName, enableTypeInference);
+        var databaseName = options.SchemaFilter ?? connection.Database;
+        return await ExtractSchemaWithDatabaseAsync(connection, databaseName, options);
     }
 
-    private async Task<DatabaseSchema> ExtractSchemaWithDatabaseAsync(MySqlConnection connection, string databaseName, bool enableTypeInference)
+    private async Task<DatabaseSchema> ExtractSchemaWithDatabaseAsync(MySqlConnection connection, string databaseName, SchemaExtractionOptions options)
     {
         var schema = new DatabaseSchema();
         
         var tables = await GetTablesInternalAsync(connection, databaseName);
+        
+        // Get views if enabled
+        if (options.IncludeViews)
+        {
+            var views = await GetViewsInternalAsync(connection, databaseName);
+            tables.AddRange(views);
+        }
         
         foreach (var tableName in tables)
         {
@@ -42,10 +49,17 @@ public class MySqlSchemaExtractor : BaseSchemaExtractor
             
             tableInfo.Columns = await GetColumnsInternalAsync(connection, databaseName, tableName);
             
-            if (enableTypeInference)
+            // Apply name-based inference first (fast, no DB queries)
+            if (options.EnableTypeInference)
             {
-                await AnalyzeBooleanColumnsInternalAsync(connection, tableInfo);
-                await AnalyzeGuidColumnsInternalAsync(connection, tableInfo);
+                ApplyNameBasedInference(tableInfo);
+            }
+            
+            // Only run expensive queries if data sampling is enabled AND type inference is enabled
+            if (options.EnableTypeInference && options.EnableDataSampling)
+            {
+                await AnalyzeBooleanColumnsInternalAsync(connection, tableInfo, onlyUninferred: true);
+                await AnalyzeGuidColumnsInternalAsync(connection, tableInfo, onlyUninferred: true);
             }
             
             tableInfo.Indexes = await GetIndexesInternalAsync(connection, databaseName, tableName);
@@ -55,29 +69,137 @@ public class MySqlSchemaExtractor : BaseSchemaExtractor
         
         schema.Relationships = await GetRelationshipsInternalAsync(connection, databaseName);
         PopulateTableRelationships(schema);
-        schema.ScalarFunctions = await GetScalarFunctionsInternalAsync(connection, databaseName);
+        
+        if (options.IncludeUserDefinedFunctions)
+        {
+            schema.ScalarFunctions = await GetScalarFunctionsInternalAsync(connection, databaseName);
+        }
+        
+        if (options.IncludeStoredProcedures)
+        {
+            schema.StoredProcedures = await GetStoredProceduresInternalAsync(connection, databaseName);
+        }
         
         return schema;
     }
 
-    private async Task AnalyzeBooleanColumnsInternalAsync(MySqlConnection connection, TableInfo tableInfo)
+    private static async Task<List<string>> GetViewsInternalAsync(MySqlConnection connection, string databaseName)
     {
-        var booleanAnalysis = await TypeInference.BooleanColumnAnalyzer.AnalyzeColumnsAsync(
-            connection, tableInfo.Schema, tableInfo.Name, tableInfo.Columns, DatabaseType);
+        var views = new List<string>();
         
-        foreach (var column in tableInfo.Columns.Where(c => 
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT TABLE_NAME 
+            FROM INFORMATION_SCHEMA.VIEWS 
+            WHERE TABLE_SCHEMA = @schema
+            ORDER BY TABLE_NAME";
+        command.Parameters.AddWithValue("@schema", databaseName);
+        
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            views.Add(reader.GetString(0));
+        }
+        
+        return views;
+    }
+
+    private static void ApplyNameBasedInference(TableInfo tableInfo)
+    {
+        foreach (var column in tableInfo.Columns)
+        {
+            var lowerName = column.Column.ToLowerInvariant();
+            var lowerType = column.Type.ToLowerInvariant();
+            
+            // Boolean inference from column name patterns
+            if (IsBooleanNamePattern(lowerName) && IsSmallIntegerType(lowerType))
+            {
+                column.InferredAsBoolean = true;
+            }
+            
+            // GUID inference from column name patterns
+            if (IsGuidNamePattern(lowerName) && IsGuidCompatibleType(lowerType))
+            {
+                column.InferredAsGuid = true;
+            }
+        }
+    }
+    
+    private static bool IsBooleanNamePattern(string columnName)
+    {
+        return columnName.StartsWith("is_") ||
+               columnName.StartsWith("has_") ||
+               columnName.StartsWith("can_") ||
+               columnName.StartsWith("should_") ||
+               columnName.EndsWith("_flag") ||
+               columnName.EndsWith("_enabled") ||
+               columnName.EndsWith("_active") ||
+               columnName.EndsWith("_deleted") ||
+               columnName == "active" ||
+               columnName == "enabled" ||
+               columnName == "deleted" ||
+               columnName == "published" ||
+               columnName == "verified";
+    }
+    
+    private static bool IsSmallIntegerType(string typeName)
+    {
+        return typeName.Contains("tinyint") ||
+               typeName.Contains("smallint") ||
+               typeName.Contains("bit") ||
+               typeName.Contains("boolean") ||
+               typeName.Contains("bool");
+    }
+    
+    private static bool IsGuidNamePattern(string columnName)
+    {
+        return columnName == "uuid" ||
+               columnName == "guid" ||
+               columnName.EndsWith("_uuid") ||
+               columnName.EndsWith("_guid") ||
+               columnName == "correlation_id" ||
+               columnName == "tracking_id" ||
+               columnName == "external_id";
+    }
+    
+    private static bool IsGuidCompatibleType(string typeName)
+    {
+        return typeName.Contains("char(36)") ||
+               typeName.Contains("varchar(36)");
+    }
+
+    private async Task AnalyzeBooleanColumnsInternalAsync(MySqlConnection connection, TableInfo tableInfo, bool onlyUninferred = false)
+    {
+        var columnsToAnalyze = onlyUninferred
+            ? tableInfo.Columns.Where(c => !c.InferredAsBoolean).ToList()
+            : tableInfo.Columns;
+            
+        if (!columnsToAnalyze.Any())
+            return;
+            
+        var booleanAnalysis = await TypeInference.BooleanColumnAnalyzer.AnalyzeColumnsAsync(
+            connection, tableInfo.Schema, tableInfo.Name, columnsToAnalyze, DatabaseType);
+        
+        foreach (var column in columnsToAnalyze.Where(c => 
             booleanAnalysis.TryGetValue(c.Column, out var couldBeBoolean) && couldBeBoolean))
         {
             column.InferredAsBoolean = true;
         }
     }
     
-    private async Task AnalyzeGuidColumnsInternalAsync(MySqlConnection connection, TableInfo tableInfo)
+    private async Task AnalyzeGuidColumnsInternalAsync(MySqlConnection connection, TableInfo tableInfo, bool onlyUninferred = false)
     {
+        var columnsToAnalyze = onlyUninferred
+            ? tableInfo.Columns.Where(c => !c.InferredAsGuid).ToList()
+            : tableInfo.Columns;
+            
+        if (!columnsToAnalyze.Any())
+            return;
+            
         var guidAnalysis = await GuidColumnAnalyzer.AnalyzeColumnsAsync(
-            connection, tableInfo.Schema, tableInfo.Name, tableInfo.Columns, DatabaseType);
+            connection, tableInfo.Schema, tableInfo.Name, columnsToAnalyze, DatabaseType);
         
-        foreach (var column in tableInfo.Columns.Where(c => 
+        foreach (var column in columnsToAnalyze.Where(c => 
             guidAnalysis.TryGetValue(c.Column, out var couldBeGuid) && couldBeGuid))
         {
             column.InferredAsGuid = true;
@@ -91,6 +213,28 @@ public class MySqlSchemaExtractor : BaseSchemaExtractor
         return tables.Select(t => (t, schemaName)).ToList();
     }
 
+    protected override async Task<List<(string name, string schema)>> GetViewsAsync(DbConnection connection, string schemaName)
+    {
+        var views = new List<(string name, string schema)>();
+        var mysqlConn = (MySqlConnection)connection;
+        
+        await using var command = mysqlConn.CreateCommand();
+        command.CommandText = @"
+            SELECT TABLE_NAME 
+            FROM INFORMATION_SCHEMA.VIEWS 
+            WHERE TABLE_SCHEMA = @schema
+            ORDER BY TABLE_NAME";
+        command.Parameters.AddWithValue("@schema", schemaName);
+        
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            views.Add((reader.GetString(0), schemaName));
+        }
+        
+        return views;
+    }
+
     protected override Task<List<ColumnInfo>> GetColumnsAsync(DbConnection connection, string schemaName, string tableName) =>
         GetColumnsInternalAsync((MySqlConnection)connection, schemaName, tableName);
 
@@ -102,6 +246,9 @@ public class MySqlSchemaExtractor : BaseSchemaExtractor
 
     protected override Task<List<ScalarFunctionInfo>> GetScalarFunctionsAsync(DbConnection connection, string schemaName) =>
         GetScalarFunctionsInternalAsync((MySqlConnection)connection, schemaName);
+
+    protected override Task<List<StoredProcedureInfo>> GetStoredProceduresAsync(DbConnection connection, string schemaName) =>
+        GetStoredProceduresInternalAsync((MySqlConnection)connection, schemaName);
 
     private static async Task<List<string>> GetTablesInternalAsync(MySqlConnection connection, string databaseName)
     {
@@ -332,5 +479,92 @@ public class MySqlSchemaExtractor : BaseSchemaExtractor
         }
         
         return parameters;
+    }
+
+    private static async Task<List<StoredProcedureInfo>> GetStoredProceduresInternalAsync(MySqlConnection connection, string databaseName)
+    {
+        var procedures = new List<StoredProcedureInfo>();
+        var procList = new List<(string schema, string name)>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                ROUTINE_SCHEMA,
+                ROUTINE_NAME
+            FROM INFORMATION_SCHEMA.ROUTINES
+            WHERE ROUTINE_SCHEMA = @schema
+              AND ROUTINE_TYPE = 'PROCEDURE'
+            ORDER BY ROUTINE_NAME";
+        command.Parameters.AddWithValue("@schema", databaseName);
+        
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                procList.Add((reader.GetString(0), reader.GetString(1)));
+            }
+        }
+        
+        foreach (var (procSchema, procName) in procList)
+        {
+            var procInfo = new StoredProcedureInfo
+            {
+                Schema = procSchema,
+                Name = procName,
+                Parameters = await GetProcedureParametersAsync(connection, procSchema, procName)
+            };
+            
+            // Determine output type based on OUT parameters
+            procInfo.OutputType = DetermineProcedureOutputType(procInfo.Parameters);
+            
+            procedures.Add(procInfo);
+        }
+        
+        return procedures;
+    }
+
+    private static async Task<List<StoredProcedureParameter>> GetProcedureParametersAsync(MySqlConnection connection, string schemaName, string procedureName)
+    {
+        var parameters = new List<StoredProcedureParameter>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                PARAMETER_NAME,
+                DATA_TYPE,
+                ORDINAL_POSITION,
+                PARAMETER_MODE
+            FROM INFORMATION_SCHEMA.PARAMETERS
+            WHERE SPECIFIC_SCHEMA = @schema 
+              AND SPECIFIC_NAME = @procedure
+            ORDER BY ORDINAL_POSITION";
+        command.Parameters.AddWithValue("@schema", schemaName);
+        command.Parameters.AddWithValue("@procedure", procedureName);
+        
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var mode = reader.IsDBNull(3) ? "IN" : reader.GetString(3);
+            parameters.Add(new StoredProcedureParameter
+            {
+                Name = reader.IsDBNull(0) ? $"p{reader.GetInt32(2)}" : reader.GetString(0),
+                DataType = reader.GetString(1),
+                OrdinalPosition = reader.GetInt32(2),
+                IsOutput = mode == "OUT" || mode == "INOUT"
+            });
+        }
+        
+        return parameters;
+    }
+
+    private static StoredProcedureOutputType DetermineProcedureOutputType(List<StoredProcedureParameter> parameters)
+    {
+        var outputParams = parameters.Count(p => p.IsOutput);
+        return outputParams switch
+        {
+            0 => StoredProcedureOutputType.None,
+            1 => StoredProcedureOutputType.Scalar,
+            _ => StoredProcedureOutputType.Tabular
+        };
     }
 }

@@ -36,6 +36,27 @@ public class SqlServerSchemaExtractor : BaseSchemaExtractor
         return tables;
     }
 
+    protected override async Task<List<(string name, string schema)>> GetViewsAsync(DbConnection connection, string schemaName)
+    {
+        var views = new List<(string name, string schema)>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT TABLE_NAME, TABLE_SCHEMA 
+            FROM INFORMATION_SCHEMA.VIEWS 
+            WHERE TABLE_SCHEMA = @schema
+            ORDER BY TABLE_NAME";
+        AddParameter(command, "@schema", schemaName);
+        
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            views.Add((reader.GetString(0), reader.GetString(1)));
+        }
+        
+        return views;
+    }
+
     protected override async Task<List<ColumnInfo>> GetColumnsAsync(DbConnection connection, string schemaName, string tableName)
     {
         var columns = new List<ColumnInfo>();
@@ -227,6 +248,181 @@ public class SqlServerSchemaExtractor : BaseSchemaExtractor
         }
         
         return parameters;
+    }
+
+    protected override async Task<List<StoredProcedureInfo>> GetStoredProceduresAsync(DbConnection connection, string schemaName)
+    {
+        var procedures = new List<StoredProcedureInfo>();
+        var procList = new List<(string schema, string name)>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                SCHEMA_NAME(p.schema_id) AS schema_name,
+                p.name AS procedure_name
+            FROM sys.procedures p
+            WHERE SCHEMA_NAME(p.schema_id) = @schema
+            ORDER BY p.name";
+        AddParameter(command, "@schema", schemaName);
+        
+        await using (var reader = await command.ExecuteReaderAsync())
+        {
+            while (await reader.ReadAsync())
+            {
+                procList.Add((reader.GetString(0), reader.GetString(1)));
+            }
+        }
+        
+        foreach (var (procSchema, procName) in procList)
+        {
+            var procInfo = new StoredProcedureInfo
+            {
+                Schema = procSchema,
+                Name = procName,
+                Parameters = await GetProcedureParametersAsync(connection, procSchema, procName)
+            };
+            
+            // Determine output type by analyzing procedure definition
+            procInfo.OutputType = await DetermineProcedureOutputTypeAsync(connection, procSchema, procName);
+            
+            if (procInfo.OutputType == StoredProcedureOutputType.Tabular)
+            {
+                procInfo.ResultColumns = await GetProcedureResultColumnsAsync(connection, procSchema, procName);
+            }
+            
+            procedures.Add(procInfo);
+        }
+        
+        return procedures;
+    }
+
+    private async Task<List<StoredProcedureParameter>> GetProcedureParametersAsync(DbConnection connection, string schemaName, string procedureName)
+    {
+        var parameters = new List<StoredProcedureParameter>();
+        
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT 
+                p.name AS param_name,
+                TYPE_NAME(p.user_type_id) AS data_type,
+                p.parameter_id,
+                p.is_output,
+                p.has_default_value
+            FROM sys.parameters p
+            JOIN sys.procedures proc ON p.object_id = proc.object_id
+            WHERE SCHEMA_NAME(proc.schema_id) = @schema 
+              AND proc.name = @procedure
+              AND p.parameter_id > 0
+            ORDER BY p.parameter_id";
+        AddParameter(command, "@schema", schemaName);
+        AddParameter(command, "@procedure", procedureName);
+        
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            var paramName = reader.GetString(0);
+            if (paramName.StartsWith('@'))
+                paramName = paramName[1..];
+                
+            parameters.Add(new StoredProcedureParameter
+            {
+                Name = paramName,
+                DataType = reader.GetString(1),
+                OrdinalPosition = reader.GetInt32(2),
+                IsOutput = reader.GetBoolean(3),
+                HasDefault = reader.GetBoolean(4)
+            });
+        }
+        
+        return parameters;
+    }
+
+    private async Task<StoredProcedureOutputType> DetermineProcedureOutputTypeAsync(DbConnection connection, string schemaName, string procedureName)
+    {
+        // Check for output parameters (scalar output)
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+            SELECT COUNT(*)
+            FROM sys.parameters p
+            JOIN sys.procedures proc ON p.object_id = proc.object_id
+            WHERE SCHEMA_NAME(proc.schema_id) = @schema 
+              AND proc.name = @procedure
+              AND p.is_output = 1";
+        AddParameter(command, "@schema", schemaName);
+        AddParameter(command, "@procedure", procedureName);
+        
+        var outputParamCount = Convert.ToInt32(await command.ExecuteScalarAsync());
+        if (outputParamCount > 0)
+        {
+            return StoredProcedureOutputType.Scalar;
+        }
+        
+        // Check procedure definition for SELECT statements (tabular output)
+        await using var defCommand = connection.CreateCommand();
+        defCommand.CommandText = @"
+            SELECT m.definition
+            FROM sys.sql_modules m
+            JOIN sys.procedures p ON m.object_id = p.object_id
+            WHERE SCHEMA_NAME(p.schema_id) = @schema 
+              AND p.name = @procedure";
+        AddParameter(defCommand, "@schema", schemaName);
+        AddParameter(defCommand, "@procedure", procedureName);
+        
+        var definition = await defCommand.ExecuteScalarAsync() as string;
+        if (!string.IsNullOrEmpty(definition))
+        {
+            // Simple heuristic: check if procedure contains SELECT that's not inside INSERT
+            var upperDef = definition.ToUpperInvariant();
+            var hasSelect = upperDef.Contains("SELECT") && !upperDef.Contains("SELECT INTO") && 
+                           !upperDef.Contains("INSERT INTO");
+            if (hasSelect)
+            {
+                return StoredProcedureOutputType.Tabular;
+            }
+        }
+        
+        return StoredProcedureOutputType.None;
+    }
+
+    private async Task<List<StoredProcedureColumn>> GetProcedureResultColumnsAsync(DbConnection connection, string schemaName, string procedureName)
+    {
+        var columns = new List<StoredProcedureColumn>();
+        
+        try
+        {
+            // Use sys.dm_exec_describe_first_result_set_for_object to get result columns
+            await using var command = connection.CreateCommand();
+            command.CommandText = @"
+                SELECT 
+                    name,
+                    system_type_name,
+                    is_nullable,
+                    column_ordinal
+                FROM sys.dm_exec_describe_first_result_set_for_object(
+                    OBJECT_ID(@fullName), NULL)
+                WHERE name IS NOT NULL
+                ORDER BY column_ordinal";
+            AddParameter(command, "@fullName", $"{schemaName}.{procedureName}");
+            
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                columns.Add(new StoredProcedureColumn
+                {
+                    Name = reader.GetString(0),
+                    DataType = reader.GetString(1),
+                    IsNullable = reader.GetBoolean(2),
+                    OrdinalPosition = reader.GetInt32(3)
+                });
+            }
+        }
+        catch
+        {
+            // Some procedures may not be analyzable (dynamic SQL, etc.)
+            // Return empty list in such cases
+        }
+        
+        return columns;
     }
 
     private static void ProcessForeignKeyRow(DbDataReader reader,

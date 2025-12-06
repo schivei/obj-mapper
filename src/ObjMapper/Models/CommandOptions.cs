@@ -26,9 +26,51 @@ public class CommandOptions
     public bool NoInference { get; set; }
     
     /// <summary>
+    /// Whether to disable data sampling queries for type verification.
+    /// When enabled, type inference uses only column metadata (name, type, comment).
+    /// This significantly speeds up schema extraction but may reduce accuracy.
+    /// </summary>
+    public bool NoChecks { get; set; }
+    
+    /// <summary>
+    /// Whether to disable view mapping.
+    /// </summary>
+    public bool NoViews { get; set; }
+    
+    /// <summary>
+    /// Whether to disable stored procedure mapping.
+    /// </summary>
+    public bool NoProcs { get; set; }
+    
+    /// <summary>
+    /// Whether to disable user-defined function mapping.
+    /// </summary>
+    public bool NoUdfs { get; set; }
+    
+    /// <summary>
     /// Whether type inference is enabled (inverse of NoInference).
     /// </summary>
     public bool UseTypeInference => !NoInference;
+    
+    /// <summary>
+    /// Whether data sampling queries are enabled (inverse of NoChecks).
+    /// </summary>
+    public bool UseDataSampling => !NoChecks;
+    
+    /// <summary>
+    /// Whether view mapping is enabled (inverse of NoViews).
+    /// </summary>
+    public bool IncludeViews => !NoViews;
+    
+    /// <summary>
+    /// Whether stored procedure mapping is enabled (inverse of NoProcs).
+    /// </summary>
+    public bool IncludeProcs => !NoProcs;
+    
+    /// <summary>
+    /// Whether user-defined function mapping is enabled (inverse of NoUdfs).
+    /// </summary>
+    public bool IncludeUdfs => !NoUdfs;
     
     /// <summary>
     /// Whether to use connection string mode instead of CSV files.

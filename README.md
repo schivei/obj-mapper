@@ -1,6 +1,17 @@
 # omap
 
-Database reverse engineering dotnet tool - generates entity mappings from CSV schema files for EF Core and Dapper.
+Database reverse engineering dotnet tool - generates entity mappings from CSV schema files or database connections for EF Core and Dapper. Features ML-based type inference, scalar UDF support, and automatic type converters.
+
+## Features
+
+- **Database Schema Extraction**: Extract schema directly from PostgreSQL, SQL Server, MySQL, SQLite databases
+- **ML-Based Type Inference**: Intelligent column type mapping using machine learning and pattern matching
+- **Scalar UDF Support**: Extract and generate code for user-defined scalar functions
+- **Type Converters**: Automatic generation of ValueConverters (EF Core) and TypeHandlers (Dapper) for DateOnly, TimeOnly, DateTimeOffset
+- **GUID Column Detection**: Automatically detect varchar(36) columns that contain GUIDs
+- **Boolean Column Detection**: Detect small integer columns (tinyint, smallint) that represent boolean values
+- **Relationship Mapping**: Full support for 1:1, 1:N, N:1, and N:M relationships
+- **Index Mapping**: Support for simple and composite indexes
 
 ## Installation
 
@@ -82,6 +93,10 @@ When using a connection string, the schema is extracted directly from the databa
   - Supported locales: `en-us`, `en-gb`, `en`, `pt-br`, `pt-pt`, `pt`, `es-es`, `es-mx`, `es`, `fr-fr`, `fr-ca`, `fr`, `de-de`, `de`, `it-it`, `it`, `nl-nl`, `nl`, `ru-ru`, `ru`, `pl-pl`, `pl`, `tr-tr`, `tr`, `ja-jp`, `ja`, `ko-kr`, `ko`, `zh-cn`, `zh-tw`, `zh`
 
 - `--no-pluralize`: Disable pluralization/singularization
+
+- `--no-inference`: Disable ML-based type inference (enabled by default)
+  - Type inference analyzes column names, types, and comments to determine the best C# type
+  - Automatically detects boolean columns, GUIDs, and date/time types
 
 ## Configuration
 
@@ -250,8 +265,156 @@ output/
 │   ├── OrderConfiguration.cs     # EF Core only
 │   ├── UserRepository.cs         # Dapper only
 │   └── OrderRepository.cs        # Dapper only
+├── Converters/                   # Generated when using DateOnly, TimeOnly, DateTimeOffset
+│   ├── DateOnlyConverter.cs      # EF Core ValueConverter
+│   ├── TimeOnlyConverter.cs      # EF Core ValueConverter
+│   ├── DateTimeOffsetConverter.cs # EF Core ValueConverter
+│   └── DapperTypeHandlers.cs     # Dapper TypeHandlers + registration
+├── Functions/                    # Generated when scalar UDFs exist
+│   ├── ScalarFunctions.cs        # EF Core [DbFunction] stubs
+│   └── ScalarFunctionRepository.cs # Dapper ExecuteScalar wrappers
 └── AppDbContext.cs
 ```
+
+## Type Inference
+
+Type inference is enabled by default and uses ML.NET combined with pattern matching to determine the best C# type for each column. Use `--no-inference` to disable.
+
+### Pattern-Based Inference
+
+The tool recognizes common column naming patterns:
+
+| Pattern | Inferred Type |
+|---------|---------------|
+| `is_*`, `has_*`, `*_flag`, `active`, `enabled`, `deleted` | `bool` |
+| `uuid`, `*_guid`, `*_uuid`, `correlation_id`, `tracking_id` | `Guid` |
+| `*_at`, `*_date`, `created`, `updated`, `deleted_at` | `DateTime` / `DateOnly` |
+| `*_time` | `TimeOnly` |
+
+### Boolean Column Detection (Connection String Mode)
+
+When using `--cs`, the tool queries small integer columns (tinyint, smallint, bit) to check if they only contain NULL, 0, or 1 values. If so, they are mapped to `bool`.
+
+```sql
+-- Example: Column "is_active TINYINT" with values {0, 1} → bool
+-- The tool runs: SELECT DISTINCT is_active FROM users WHERE is_active IS NOT NULL
+```
+
+### GUID Column Detection (Connection String Mode)
+
+When using `--cs`, varchar(36) and char(36) columns are analyzed for valid GUID values:
+- Requires at least 10 valid GUID values
+- Must not contain any blank or whitespace-only values
+- If conditions are met, the column is mapped to `Guid`
+
+```csharp
+// Column "tracking_id VARCHAR(36)" with valid GUIDs → Guid
+public Guid TrackingId { get; set; }
+```
+
+### CSV Mode
+
+In CSV mode, `char(36)` columns are automatically mapped to `Guid`. Additional inference based on column names is still applied.
+
+## Scalar User-Defined Functions
+
+The tool extracts scalar user-defined functions (UDFs) from the database and generates appropriate code:
+
+### EF Core
+
+Generates static methods with `[DbFunction]` attribute:
+
+```csharp
+public static partial class ScalarFunctions
+{
+    [DbFunction("calculate_tax", "dbo")]
+    public static decimal CalculateTax(decimal amount, decimal rate)
+        => throw new NotSupportedException("This method is for use in LINQ queries only.");
+}
+```
+
+Register in your DbContext:
+
+```csharp
+modelBuilder.HasDbFunction(typeof(ScalarFunctions).GetMethod(nameof(ScalarFunctions.CalculateTax)));
+```
+
+### Dapper
+
+Generates repository methods with sync and async variants:
+
+```csharp
+public partial class ScalarFunctionRepository(IDbConnection connection)
+{
+    public decimal CalculateTax(decimal amount, decimal rate)
+    {
+        return connection.ExecuteScalar<decimal>(
+            "SELECT dbo.calculate_tax(@Amount, @Rate)",
+            new { Amount = amount, Rate = rate });
+    }
+    
+    public async Task<decimal> CalculateTaxAsync(decimal amount, decimal rate)
+    {
+        return await connection.ExecuteScalarAsync<decimal>(
+            "SELECT dbo.calculate_tax(@Amount, @Rate)",
+            new { Amount = amount, Rate = rate });
+    }
+}
+```
+
+## Type Converters
+
+The tool automatically generates type converters for types not natively supported by all database drivers:
+
+### DateOnly, TimeOnly, DateTimeOffset
+
+Some database drivers don't natively support `DateOnly`, `TimeOnly`, or `DateTimeOffset`. The tool generates:
+
+**EF Core ValueConverters:**
+
+```csharp
+public class DateOnlyConverter : ValueConverter<DateOnly, DateTime>
+{
+    public DateOnlyConverter() : base(
+        d => d.ToDateTime(TimeOnly.MinValue),
+        d => DateOnly.FromDateTime(d))
+    { }
+}
+```
+
+**Dapper TypeHandlers:**
+
+```csharp
+public class DateOnlyTypeHandler : SqlMapper.TypeHandler<DateOnly>
+{
+    public override DateOnly Parse(object value) => DateOnly.FromDateTime((DateTime)value);
+    public override void SetValue(IDbDataParameter parameter, DateOnly value)
+    {
+        parameter.Value = value.ToDateTime(TimeOnly.MinValue);
+        parameter.DbType = DbType.Date;
+    }
+}
+
+// Registration helper
+public static class DapperTypeHandlerRegistration
+{
+    public static void RegisterAll()
+    {
+        SqlMapper.AddTypeHandler(new DateOnlyTypeHandler());
+        SqlMapper.AddTypeHandler(new TimeOnlyTypeHandler());
+        SqlMapper.AddTypeHandler(new DateTimeOffsetTypeHandler());
+    }
+}
+```
+
+### DateTimeOffset Mapping
+
+The tool maps database types to `DateTimeOffset` when appropriate:
+
+| Database | Type | C# Type |
+|----------|------|---------|
+| PostgreSQL | `timestamptz` | `DateTimeOffset` |
+| SQL Server | `datetimeoffset` | `DateTimeOffset` |
 
 ## Pluralization
 

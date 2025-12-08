@@ -46,11 +46,50 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
 
     public virtual async Task<DatabaseSchema> ExtractSchemaAsync(string connectionString, SchemaExtractionOptions options)
     {
+        // Validate connection string
+        if (string.IsNullOrWhiteSpace(connectionString))
+        {
+            throw new ArgumentException("Connection string cannot be null or empty.", nameof(connectionString));
+        }
+        
         var schema = new DatabaseSchema();
-        var schemaName = options.SchemaFilter ?? DefaultSchemaName;
+        
+        // Infer default schema if not provided
+        string schemaName;
+        if (string.IsNullOrWhiteSpace(options.SchemaFilter))
+        {
+            // Try to detect database type from connection string
+            var detectedType = SchemaExtractorFactory.DetectDatabaseType(connectionString);
+            
+            schemaName = detectedType switch
+            {
+                DatabaseType.PostgreSql => "public",
+                DatabaseType.SqlServer => "dbo",
+                // MySQL and SQLite treat schema as database/catalog, so leave empty
+                DatabaseType.MySql => string.Empty,
+                DatabaseType.Sqlite => string.Empty,
+                // Fallback to DefaultSchemaName if detection fails
+                _ => DefaultSchemaName
+            };
+        }
+        else
+        {
+            schemaName = options.SchemaFilter;
+        }
         
         await using var connection = CreateConnection(connectionString);
-        await connection.OpenAsync();
+        
+        // Capture connection opening errors and provide informative message
+        try
+        {
+            await connection.OpenAsync();
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Failed to open database connection. Please verify your connection string and ensure the database is accessible. Error: {ex.Message}", 
+                ex);
+        }
         
         // Template method: Get all tables
         var tables = await GetTablesAsync(connection, schemaName);

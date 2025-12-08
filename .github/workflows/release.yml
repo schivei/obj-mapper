@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - 'v*'
+  release:
+    types:
+      - created
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (ex: v1.2.3). If vazio, será usado o tag do release ou o tag do push quando disponível.'
+        required: false
+        default: ''
 
 permissions:
   contents: write  # Required for creating releases
@@ -33,16 +42,38 @@ jobs:
         
     - name: Get version from tag
       id: get_version
+      env:
+        INPUT_TAG: ${{ github.event.inputs.tag }}
+        RELEASE_TAG: ${{ github.event.release.tag_name }}
+        REF_TAG: ${{ github.ref_name }}
       run: |
-        TAG=${GITHUB_REF#refs/tags/v}
-        # Parse version components
+        # Prioridade:
+        # 1) input informado manualmente via workflow_dispatch (INPUT_TAG)
+        # 2) tag do release (RELEASE_TAG)
+        # 3) ref name (REF_TAG) — quando workflow disparado por push de tag
+        if [ -n "${INPUT_TAG}" ]; then
+          TAG="${INPUT_TAG}"
+        elif [ -n "${RELEASE_TAG}" ]; then
+          TAG="${RELEASE_TAG}"
+        elif [ -n "${REF_TAG}" ]; then
+          TAG="${REF_TAG}"
+        else
+          echo "Nenhuma tag fornecida ou detectada (use o input 'tag' ao executar manualmente)." >&2
+          exit 1
+        fi
+
+        # Remover prefixo "v" se existir (tags como v1.2.3)
+        TAG="${TAG#v}"
+
+        # Parse version components (prefix e optional suffix após '-')
         if [[ $TAG == *-* ]]; then
-          VERSION_PREFIX=$(echo $TAG | cut -d'-' -f1)
-          VERSION_SUFFIX=$(echo $TAG | cut -d'-' -f2-)
+          VERSION_PREFIX=$(echo "$TAG" | cut -d'-' -f1)
+          VERSION_SUFFIX=$(echo "$TAG" | cut -d'-' -f2-)
         else
           VERSION_PREFIX=$TAG
           VERSION_SUFFIX=""
         fi
+
         echo "VERSION_PREFIX=$VERSION_PREFIX" >> $GITHUB_OUTPUT
         echo "VERSION_SUFFIX=$VERSION_SUFFIX" >> $GITHUB_OUTPUT
         echo "FULL_VERSION=$TAG" >> $GITHUB_OUTPUT

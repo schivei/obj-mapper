@@ -335,8 +335,10 @@ public class EfCoreGeneratorTests
         // Assert
         Assert.Contains("using System.Reflection;", context);
         Assert.Contains("// Register scalar functions", context);
-        Assert.Contains("modelBuilder.HasDbFunction(typeof(DbFunctions).GetMethod(nameof(DbFunctions.CalculateTax), BindingFlags.Public | BindingFlags.Static)!);", context);
-        Assert.Contains("modelBuilder.HasDbFunction(typeof(DbFunctions).GetMethod(nameof(DbFunctions.GetFullName), BindingFlags.Public | BindingFlags.Static)!);", context);
+        Assert.Contains("modelBuilder.HasDbFunction(typeof(DbFunctions).GetMethod(nameof(DbFunctions.CalculateTax), BindingFlags.Public | BindingFlags.Static)", context);
+        Assert.Contains("?? throw new InvalidOperationException(\"Scalar function method 'CalculateTax' not found in DbFunctions class.\")", context);
+        Assert.Contains("modelBuilder.HasDbFunction(typeof(DbFunctions).GetMethod(nameof(DbFunctions.GetFullName), BindingFlags.Public | BindingFlags.Static)", context);
+        Assert.Contains("?? throw new InvalidOperationException(\"Scalar function method 'GetFullName' not found in DbFunctions class.\")", context);
     }
 
     [Fact]

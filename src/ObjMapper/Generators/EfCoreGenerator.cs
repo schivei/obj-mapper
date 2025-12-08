@@ -100,7 +100,8 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
             foreach (var func in schema.ScalarFunctions)
             {
                 var methodName = NamingHelper.ToPascalCase(func.Name);
-                sb.AppendLine($"        modelBuilder.HasDbFunction(typeof(DbFunctions).GetMethod(nameof(DbFunctions.{methodName}), BindingFlags.Public | BindingFlags.Static)!);");
+                sb.AppendLine($"        modelBuilder.HasDbFunction(typeof(DbFunctions).GetMethod(nameof(DbFunctions.{methodName}), BindingFlags.Public | BindingFlags.Static)");
+                sb.AppendLine($"            ?? throw new InvalidOperationException(\"Scalar function method '{methodName}' not found in DbFunctions class.\"));");
             }
         }
 

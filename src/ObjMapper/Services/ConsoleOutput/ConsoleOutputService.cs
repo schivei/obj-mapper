@@ -219,34 +219,23 @@ public sealed class ConsoleOutputService : IDisposable
             .SpinnerStyle(Style.Parse("cyan"))
             .StartAsync(message, async ctx =>
             {
-                var taskCompletion = new TaskCompletionSource<T>();
-                
                 // Start the actual task
                 var actionTask = Task.Run(async () =>
                 {
-                    try
-                    {
-                        var res = await action();
-                        taskCompletion.TrySetResult(res);
-                    }
-                    catch (Exception ex)
-                    {
-                        taskCompletion.TrySetException(ex);
-                    }
+                    return await action();
                 });
                 
                 // Update status with elapsed time every 100ms
-                while (!taskCompletion.Task.IsCompleted)
+                while (!actionTask.IsCompleted)
                 {
                     var elapsedStr = FormatElapsed(taskStopwatch.Elapsed);
                     ctx.Status($"{message} [yellow]⏱ {elapsedStr}[/]");
                     
                     // Wait a bit before next update, or until task completes
-                    var delayTask = Task.Delay(100);
-                    await Task.WhenAny(taskCompletion.Task, delayTask);
+                    await Task.WhenAny(actionTask, Task.Delay(100));
                 }
                 
-                result = await taskCompletion.Task;
+                result = await actionTask;
             });
         
         taskStopwatch.Stop();

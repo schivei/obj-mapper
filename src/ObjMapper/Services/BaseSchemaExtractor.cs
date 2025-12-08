@@ -58,17 +58,15 @@ public abstract class BaseSchemaExtractor : IDatabaseSchemaExtractor
         string schemaName;
         if (string.IsNullOrWhiteSpace(options.SchemaFilter))
         {
-            // Try to detect database type from connection string
-            var detectedType = SchemaExtractorFactory.DetectDatabaseType(connectionString);
-            
-            schemaName = detectedType switch
+            // Use the class's DatabaseType property to determine default schema
+            schemaName = DatabaseType switch
             {
                 DatabaseType.PostgreSql => "public",
                 DatabaseType.SqlServer => "dbo",
                 // MySQL and SQLite treat schema as database/catalog, so leave empty
                 DatabaseType.MySql => string.Empty,
                 DatabaseType.Sqlite => string.Empty,
-                // Fallback to DefaultSchemaName if detection fails
+                // Fallback to DefaultSchemaName for any other type
                 _ => DefaultSchemaName
             };
         }

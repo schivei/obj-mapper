@@ -212,80 +212,43 @@ public sealed class ConsoleOutputService : IDisposable
         
         T result = default!;
         
-        // Use Live display for real-time elapsed time updates
-        await AnsiConsole.Live(CreateSpinnerTable(message, TimeSpan.Zero))
-            .AutoClear(false)
-            .Overflow(VerticalOverflow.Ellipsis)
-            .Cropping(VerticalOverflowCropping.Top)
-            .StartAsync(async ctx =>
+        // Use Status display for single-line updates
+        await AnsiConsole.Status()
+            .AutoRefresh(true)
+            .Spinner(Spinner.Known.Dots)
+            .SpinnerStyle(Style.Parse("cyan"))
+            .StartAsync(message, async ctx =>
             {
-                var taskCompletion = new TaskCompletionSource<T>();
-                var cts = new CancellationTokenSource();
-                
                 // Start the actual task
                 var actionTask = Task.Run(async () =>
                 {
-                    try
-                    {
-                        var res = await action();
-                        taskCompletion.TrySetResult(res);
-                    }
-                    catch (Exception ex)
-                    {
-                        taskCompletion.TrySetException(ex);
-                    }
+                    return await action();
                 });
                 
-                // Update display every 100ms with elapsed time
-                while (!taskCompletion.Task.IsCompleted)
+                // Update status with elapsed time every 100ms
+                while (!actionTask.IsCompleted)
                 {
-                    ctx.UpdateTarget(CreateSpinnerTable(message, taskStopwatch.Elapsed));
+                    var elapsedStr = FormatElapsed(taskStopwatch.Elapsed);
+                    ctx.Status($"{message} [yellow]⏱ {elapsedStr}[/]");
                     
                     // Wait a bit before next update, or until task completes
-                    var delayTask = Task.Delay(100, cts.Token);
-                    await Task.WhenAny(taskCompletion.Task, delayTask);
+                    await Task.WhenAny(actionTask, Task.Delay(100));
                 }
                 
-                // Final update
-                ctx.UpdateTarget(CreateSpinnerTable(message, taskStopwatch.Elapsed, completed: true));
-                
-                result = await taskCompletion.Task;
-                await cts.CancelAsync();
+                result = await actionTask;
             });
         
         taskStopwatch.Stop();
+        
+        // Write completion message on a new line
+        var finalElapsed = FormatElapsed(taskStopwatch.Elapsed);
+        AnsiConsole.MarkupLine($"[green]✓[/] {Markup.Escape(message)} [yellow]⏱ {finalElapsed}[/]");
+        
         Log($"[TASK END] {message} - {taskStopwatch.ElapsedMilliseconds}ms");
         
         return result;
     }
     
-    /// <summary>
-    /// Creates a table with spinner and elapsed time for live display.
-    /// </summary>
-    private static Table CreateSpinnerTable(string message, TimeSpan elapsed, bool completed = false)
-    {
-        var spinnerChars = new[] { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
-        var spinnerIndex = (int)(elapsed.TotalMilliseconds / 80) % spinnerChars.Length;
-        var spinner = completed ? "[green]✓[/]" : $"[cyan]{spinnerChars[spinnerIndex]}[/]";
-        var elapsedStr = FormatElapsed(elapsed);
-        var status = completed ? "[green]Done[/]" : "[grey]Running...[/]";
-        
-        var table = new Table()
-            .Border(TableBorder.None)
-            .HideHeaders()
-            .AddColumn(new TableColumn("").Width(3))
-            .AddColumn(new TableColumn("").NoWrap())
-            .AddColumn(new TableColumn("").RightAligned());
-        
-        table.AddRow(
-            new Markup(spinner),
-            new Markup($"[white]{Markup.Escape(message)}[/]"),
-            new Markup($"[yellow]⏱ {elapsedStr}[/] {status}")
-        );
-        
-        return table;
-    }
-
     /// <summary>
     /// Runs an action with a spinner (void return).
     /// </summary>

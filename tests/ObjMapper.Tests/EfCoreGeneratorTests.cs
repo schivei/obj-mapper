@@ -294,4 +294,84 @@ public class EfCoreGeneratorTests
         // Assert
         Assert.Contains("public string Name { get; set; } = string.Empty;", userEntity);
     }
+
+    [Fact]
+    public void GenerateDbContext_RegistersScalarFunctions()
+    {
+        // Arrange
+        var generator = new EfCoreGenerator(DatabaseType.SqlServer, "TestNamespace");
+        var schema = new DatabaseSchema
+        {
+            Tables = [],
+            ScalarFunctions =
+            [
+                new ScalarFunctionInfo
+                {
+                    Schema = "dbo",
+                    Name = "calculate_tax",
+                    ReturnType = "decimal",
+                    Parameters =
+                    [
+                        new ScalarFunctionParameter { Name = "amount", DataType = "decimal", OrdinalPosition = 1 }
+                    ]
+                },
+                new ScalarFunctionInfo
+                {
+                    Schema = "dbo",
+                    Name = "get_full_name",
+                    ReturnType = "varchar",
+                    Parameters =
+                    [
+                        new ScalarFunctionParameter { Name = "first_name", DataType = "varchar", OrdinalPosition = 1 },
+                        new ScalarFunctionParameter { Name = "last_name", DataType = "varchar", OrdinalPosition = 2 }
+                    ]
+                }
+            ]
+        };
+
+        // Act
+        var context = generator.GenerateDbContext(schema, "AppDbContext");
+
+        // Assert
+        Assert.Contains("using System.Reflection;", context);
+        Assert.Contains("// Register scalar functions", context);
+        Assert.Contains("modelBuilder.HasDbFunction(typeof(DbFunctions).GetMethod(nameof(DbFunctions.CalculateTax), BindingFlags.Public | BindingFlags.Static)", context);
+        Assert.Contains("?? throw new InvalidOperationException(\"Scalar function method 'CalculateTax' not found in DbFunctions class.\")", context);
+        Assert.Contains("modelBuilder.HasDbFunction(typeof(DbFunctions).GetMethod(nameof(DbFunctions.GetFullName), BindingFlags.Public | BindingFlags.Static)", context);
+        Assert.Contains("?? throw new InvalidOperationException(\"Scalar function method 'GetFullName' not found in DbFunctions class.\")", context);
+    }
+
+    [Fact]
+    public void GenerateDbContext_WithoutScalarFunctions_DoesNotIncludeReflectionUsing()
+    {
+        // Arrange
+        var generator = new EfCoreGenerator(DatabaseType.PostgreSql, "TestNamespace");
+        var schema = CreateSimpleSchema();
+
+        // Act
+        var context = generator.GenerateDbContext(schema, "TestContext");
+
+        // Assert
+        Assert.DoesNotContain("using System.Reflection;", context);
+        Assert.DoesNotContain("// Register scalar functions", context);
+    }
+
+    [Fact]
+    public void GenerateDbContext_WithEmptyScalarFunctions_DoesNotRegisterFunctions()
+    {
+        // Arrange
+        var generator = new EfCoreGenerator(DatabaseType.PostgreSql, "TestNamespace");
+        var schema = new DatabaseSchema
+        {
+            Tables = [],
+            ScalarFunctions = []
+        };
+
+        // Act
+        var context = generator.GenerateDbContext(schema, "TestContext");
+
+        // Assert
+        Assert.DoesNotContain("using System.Reflection;", context);
+        Assert.DoesNotContain("modelBuilder.HasDbFunction", context);
+    }
 }

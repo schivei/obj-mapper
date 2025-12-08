@@ -54,6 +54,13 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         var filteredTables = FilterDuplicateTables(schema.Tables);
         
         sb.AppendLine("using Microsoft.EntityFrameworkCore;");
+        
+        // Add System.Reflection using if there are scalar functions
+        if (schema.ScalarFunctions.Count > 0)
+        {
+            sb.AppendLine("using System.Reflection;");
+        }
+        
         sb.AppendLine();
         sb.AppendLine($"namespace {_namespace};");
         sb.AppendLine();
@@ -83,6 +90,19 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
         {
             var entityName = NamingHelper.ToEntityName(table.Name);
             sb.AppendLine($"        modelBuilder.ApplyConfiguration(new {entityName}Configuration());");
+        }
+
+        // Register scalar functions
+        if (schema.ScalarFunctions.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("        // Register scalar functions");
+            
+            foreach (var methodName in schema.ScalarFunctions.Select(func => NamingHelper.ToPascalCase(func.Name)))
+            {
+                sb.AppendLine($"        modelBuilder.HasDbFunction(typeof(DbFunctions).GetMethod(nameof(DbFunctions.{methodName}), BindingFlags.Public | BindingFlags.Static)");
+                sb.AppendLine($"            ?? throw new InvalidOperationException(\"Scalar function method '{methodName}' not found in DbFunctions class.\"));");
+            }
         }
 
         sb.AppendLine();

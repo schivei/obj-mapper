@@ -98,15 +98,10 @@ public class EfCoreGenerator(DatabaseType databaseType, string namespaceName = "
             sb.AppendLine();
             sb.AppendLine("        // Register scalar functions");
             
-            var functionRegistrations = schema.ScalarFunctions
-                .Select(func => NamingHelper.ToPascalCase(func.Name))
-                .Select(methodName => 
-                    $"        modelBuilder.HasDbFunction(typeof(DbFunctions).GetMethod(nameof(DbFunctions.{methodName}), BindingFlags.Public | BindingFlags.Static)\n" +
-                    $"            ?? throw new InvalidOperationException(\"Scalar function method '{methodName}' not found in DbFunctions class.\"));");
-            
-            foreach (var registration in functionRegistrations)
+            foreach (var methodName in schema.ScalarFunctions.Select(func => NamingHelper.ToPascalCase(func.Name)))
             {
-                sb.AppendLine(registration);
+                sb.AppendLine($"        modelBuilder.HasDbFunction(typeof(DbFunctions).GetMethod(nameof(DbFunctions.{methodName}), BindingFlags.Public | BindingFlags.Static)");
+                sb.AppendLine($"            ?? throw new InvalidOperationException(\"Scalar function method '{methodName}' not found in DbFunctions class.\"));");
             }
         }
 
